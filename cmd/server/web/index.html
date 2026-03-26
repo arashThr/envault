@@ -1,0 +1,634 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Envault</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0f1117;
+      --surface:   #1a1d27;
+      --surface2:  #22263a;
+      --border:    #2e3347;
+      --accent:    #6c63ff;
+      --accent2:   #8b82ff;
+      --text:      #e2e4ef;
+      --muted:     #6b6f85;
+      --green:     #4caf87;
+      --red:       #e05252;
+      --mono:      "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 14px;
+      line-height: 1.6;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* ── header ── */
+    header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 0 24px;
+      height: 52px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+      flex-shrink: 0;
+    }
+    header .logo {
+      font-size: 17px;
+      font-weight: 700;
+      letter-spacing: -.3px;
+      color: var(--accent2);
+    }
+    header .logo span { color: var(--text); }
+    header .tagline { color: var(--muted); font-size: 12px; }
+    header .spacer { flex: 1; }
+    #status-msg {
+      font-size: 12px;
+      padding: 3px 10px;
+      border-radius: 4px;
+      opacity: 0;
+      transition: opacity .3s;
+    }
+    #status-msg.show { opacity: 1; }
+    #status-msg.ok  { background: #1d3a2e; color: var(--green); }
+    #status-msg.err { background: #3a1d1d; color: var(--red); }
+
+    /* ── layout ── */
+    .layout {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    /* ── sidebar ── */
+    aside {
+      width: 220px;
+      flex-shrink: 0;
+      border-right: 1px solid var(--border);
+      background: var(--surface);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .sidebar-title {
+      padding: 14px 16px 8px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .8px;
+      color: var(--muted);
+    }
+    .project-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 4px 8px 8px;
+    }
+    .project-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 10px;
+      border-radius: 6px;
+      cursor: pointer;
+      color: var(--text);
+      transition: background .15s;
+      user-select: none;
+    }
+    .project-item:hover  { background: var(--surface2); }
+    .project-item.active { background: var(--accent); color: #fff; }
+    .project-item .icon { font-size: 13px; }
+    .project-item .name { flex: 1; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .project-item .del-btn {
+      opacity: 0;
+      background: none;
+      border: none;
+      color: inherit;
+      cursor: pointer;
+      padding: 0 2px;
+      font-size: 15px;
+      line-height: 1;
+    }
+    .project-item:hover .del-btn { opacity: .5; }
+    .project-item:hover .del-btn:hover { opacity: 1; }
+
+    .new-project-row {
+      padding: 8px;
+      border-top: 1px solid var(--border);
+    }
+    .new-project-row input {
+      width: 100%;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      padding: 6px 10px;
+      font-size: 13px;
+      outline: none;
+    }
+    .new-project-row input:focus { border-color: var(--accent); }
+    .new-project-row input::placeholder { color: var(--muted); }
+
+    /* ── main ── */
+    main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .file-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 20px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+      flex-shrink: 0;
+      flex-wrap: wrap;
+    }
+    .file-bar .proj-label {
+      font-weight: 600;
+      font-size: 15px;
+      margin-right: 6px;
+    }
+    .file-tab {
+      padding: 4px 12px;
+      border-radius: 5px;
+      border: 1px solid var(--border);
+      cursor: pointer;
+      font-size: 13px;
+      color: var(--muted);
+      background: transparent;
+      transition: all .15s;
+      font-family: var(--mono);
+    }
+    .file-tab:hover  { border-color: var(--accent); color: var(--text); }
+    .file-tab.active { border-color: var(--accent); background: var(--accent); color: #fff; }
+    .file-tab .close {
+      margin-left: 6px;
+      opacity: .6;
+      font-size: 11px;
+    }
+    .file-tab .close:hover { opacity: 1; }
+
+    .add-file-btn {
+      padding: 4px 10px;
+      border-radius: 5px;
+      border: 1px dashed var(--border);
+      cursor: pointer;
+      font-size: 13px;
+      color: var(--muted);
+      background: transparent;
+      transition: all .15s;
+    }
+    .add-file-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+    .spacer { flex: 1; }
+
+    .action-btn {
+      padding: 5px 14px;
+      border-radius: 6px;
+      border: none;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 500;
+      transition: opacity .15s;
+    }
+    .action-btn:hover { opacity: .85; }
+    .btn-save   { background: var(--accent); color: #fff; }
+    .btn-delete { background: var(--red);    color: #fff; }
+
+    /* ── editor ── */
+    .editor-area {
+      flex: 1;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    #editor {
+      flex: 1;
+      width: 100%;
+      background: var(--bg);
+      color: var(--text);
+      border: none;
+      outline: none;
+      resize: none;
+      padding: 20px 24px;
+      font-family: var(--mono);
+      font-size: 13px;
+      line-height: 1.7;
+      tab-size: 2;
+    }
+
+    /* ── empty state ── */
+    .empty-state {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      color: var(--muted);
+      gap: 10px;
+    }
+    .empty-state .big { font-size: 48px; }
+    .empty-state p    { font-size: 14px; }
+
+    /* ── modal ── */
+    .modal-overlay {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,.6);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 100;
+    }
+    .modal-overlay.hidden { display: none; }
+    .modal {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 24px;
+      width: 360px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .modal h2 { font-size: 16px; }
+    .modal input {
+      width: 100%;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      padding: 8px 12px;
+      font-size: 14px;
+      outline: none;
+      font-family: var(--mono);
+    }
+    .modal input:focus { border-color: var(--accent); }
+    .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+    .btn-cancel { padding: 6px 16px; border-radius: 6px; border: 1px solid var(--border); background: transparent; color: var(--text); cursor: pointer; font-size: 13px; }
+    .btn-confirm { padding: 6px 16px; border-radius: 6px; border: none; background: var(--accent); color: #fff; cursor: pointer; font-size: 13px; font-weight: 500; }
+
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo">env<span>vault</span></div>
+  <div class="tagline">secure .env manager</div>
+  <div class="spacer"></div>
+  <div id="status-msg"></div>
+</header>
+
+<div class="layout">
+  <aside>
+    <div class="sidebar-title">Projects</div>
+    <div class="project-list" id="project-list"></div>
+    <div class="new-project-row">
+      <input id="new-project-input" type="text" placeholder="+ new project…" />
+    </div>
+  </aside>
+
+  <main>
+    <div id="no-project" class="empty-state">
+      <div class="big">🔐</div>
+      <p>Select a project or create one to get started.</p>
+    </div>
+
+    <div id="project-view" style="display:none; flex-direction:column; flex:1; overflow:hidden;">
+      <div class="file-bar" id="file-bar">
+        <span class="proj-label" id="proj-label"></span>
+        <div id="file-tabs"></div>
+        <button class="add-file-btn" id="add-file-btn">+ file</button>
+        <div class="spacer"></div>
+        <button class="action-btn btn-save"   id="save-btn">Save</button>
+        <button class="action-btn btn-delete" id="delete-file-btn">Delete file</button>
+      </div>
+      <div class="editor-area" id="editor-area">
+        <div id="no-file" class="empty-state" style="flex:1;">
+          <div class="big">📄</div>
+          <p>Add or select a file above.</p>
+        </div>
+        <textarea id="editor" style="display:none;" spellcheck="false" placeholder="# Add your environment variables here&#10;DATABASE_URL=postgres://...&#10;SECRET_KEY=..."></textarea>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- Modal for new file name -->
+<div class="modal-overlay hidden" id="modal">
+  <div class="modal">
+    <h2>New file</h2>
+    <input id="modal-input" type="text" placeholder=".env" value=".env" />
+    <div class="modal-actions">
+      <button class="btn-cancel" id="modal-cancel">Cancel</button>
+      <button class="btn-confirm" id="modal-confirm">Create</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── state ────────────────────────────────────────────────────────────────────
+let projects   = [];
+let activeProj = null;
+let files      = {};   // project -> [{name,size,mod_time}]
+let contents   = {};   // "project/file" -> string
+let activeFile = null;
+let dirty      = false;
+
+// ── api ───────────────────────────────────────────────────────────────────────
+const apiKey = localStorage.getItem('envault_api_key') || promptApiKey();
+
+function promptApiKey() {
+  const key = window.prompt('Enter your Envault API key:');
+  if (key) localStorage.setItem('envault_api_key', key);
+  return key || '';
+}
+
+const headers = () => ({ 'X-API-Key': apiKey, 'Content-Type': 'text/plain' });
+const jsonHeaders = () => ({ 'X-API-Key': apiKey, 'Content-Type': 'application/json' });
+
+async function apiFetch(path, opts = {}) {
+  const res = await fetch('/api' + path, { headers: headers(), ...opts });
+  return res;
+}
+
+async function loadProjects() {
+  const res = await apiFetch('/projects');
+  if (!res.ok) { showStatus('Failed to load projects', true); return; }
+  const data = await res.json();
+  projects = data.projects || [];
+  renderProjects();
+}
+
+async function loadFiles(project) {
+  const res = await apiFetch(`/projects/${encodeURIComponent(project)}/files`);
+  if (!res.ok) { files[project] = []; return; }
+  const data = await res.json();
+  files[project] = data.files || [];
+}
+
+async function loadFileContent(project, file) {
+  const key = `${project}/${file}`;
+  if (contents[key] !== undefined) return contents[key];
+  const res = await apiFetch(`/projects/${encodeURIComponent(project)}/files/${encodeURIComponent(file)}`);
+  if (!res.ok) return '';
+  const text = await res.text();
+  contents[key] = text;
+  return text;
+}
+
+async function saveFile(project, file, content) {
+  const res = await apiFetch(
+    `/projects/${encodeURIComponent(project)}/files/${encodeURIComponent(file)}`,
+    { method: 'PUT', body: content }
+  );
+  if (!res.ok) { showStatus('Save failed', true); return; }
+  contents[`${project}/${file}`] = content;
+  // refresh file list
+  await loadFiles(project);
+  renderFileTabs();
+  showStatus('Saved');
+}
+
+async function deleteFile(project, file) {
+  const res = await apiFetch(
+    `/projects/${encodeURIComponent(project)}/files/${encodeURIComponent(file)}`,
+    { method: 'DELETE' }
+  );
+  if (!res.ok) { showStatus('Delete failed', true); return; }
+  delete contents[`${project}/${file}`];
+  await loadFiles(project);
+  activeFile = null;
+  renderFileTabs();
+  renderEditor();
+  showStatus('Deleted');
+}
+
+async function deleteProject(project) {
+  const res = await apiFetch(`/projects/${encodeURIComponent(project)}`, { method: 'DELETE' });
+  if (!res.ok) { showStatus('Delete failed', true); return; }
+  projects = projects.filter(p => p !== project);
+  delete files[project];
+  if (activeProj === project) {
+    activeProj = null;
+    activeFile = null;
+  }
+  renderProjects();
+  renderProjectView();
+  showStatus('Project deleted');
+}
+
+// ── render ────────────────────────────────────────────────────────────────────
+function renderProjects() {
+  const list = document.getElementById('project-list');
+  list.innerHTML = '';
+  if (projects.length === 0) {
+    list.innerHTML = '<div style="padding:10px 12px;color:var(--muted);font-size:12px;">No projects yet</div>';
+    return;
+  }
+  for (const p of projects) {
+    const item = document.createElement('div');
+    item.className = 'project-item' + (p === activeProj ? ' active' : '');
+    item.innerHTML = `
+      <span class="icon">📁</span>
+      <span class="name">${esc(p)}</span>
+      <button class="del-btn" title="Delete project" data-project="${esc(p)}">✕</button>
+    `;
+    item.querySelector('.name').addEventListener('click', () => selectProject(p));
+    item.querySelector('.icon').addEventListener('click', () => selectProject(p));
+    item.querySelector('.del-btn').addEventListener('click', async (e) => {
+      e.stopPropagation();
+      if (confirm(`Delete project "${p}" and all its files?`)) {
+        await deleteProject(p);
+      }
+    });
+    list.appendChild(item);
+  }
+}
+
+async function selectProject(p) {
+  if (dirty && activeFile) {
+    if (!confirm('You have unsaved changes. Discard them?')) return;
+    dirty = false;
+  }
+  activeProj = p;
+  activeFile = null;
+  if (!files[p]) await loadFiles(p);
+  renderProjects();
+  renderProjectView();
+}
+
+function renderProjectView() {
+  const noProj = document.getElementById('no-project');
+  const projView = document.getElementById('project-view');
+  if (!activeProj) {
+    noProj.style.display = 'flex';
+    projView.style.display = 'none';
+    return;
+  }
+  noProj.style.display = 'none';
+  projView.style.display = 'flex';
+  document.getElementById('proj-label').textContent = activeProj;
+  renderFileTabs();
+  renderEditor();
+}
+
+function renderFileTabs() {
+  const tabs = document.getElementById('file-tabs');
+  tabs.innerHTML = '';
+  const fileList = files[activeProj] || [];
+  for (const f of fileList) {
+    const btn = document.createElement('button');
+    btn.className = 'file-tab' + (f.name === activeFile ? ' active' : '');
+    btn.innerHTML = `${esc(f.name)} <span class="close" data-file="${esc(f.name)}">✕</span>`;
+    btn.addEventListener('click', () => selectFile(f.name));
+    btn.querySelector('.close').addEventListener('click', async (e) => {
+      e.stopPropagation();
+      if (confirm(`Delete ${f.name}?`)) await deleteFile(activeProj, f.name);
+    });
+    tabs.appendChild(btn);
+  }
+}
+
+async function selectFile(name) {
+  if (dirty && activeFile && activeFile !== name) {
+    if (!confirm('You have unsaved changes. Discard them?')) return;
+    dirty = false;
+  }
+  activeFile = name;
+  const content = await loadFileContent(activeProj, name);
+  renderFileTabs();
+  renderEditor(content);
+}
+
+function renderEditor(content) {
+  const noFile  = document.getElementById('no-file');
+  const editor  = document.getElementById('editor');
+  const saveBtn = document.getElementById('save-btn');
+  const delBtn  = document.getElementById('delete-file-btn');
+
+  if (!activeFile) {
+    noFile.style.display  = 'flex';
+    editor.style.display  = 'none';
+    saveBtn.style.display = 'none';
+    delBtn.style.display  = 'none';
+    return;
+  }
+  noFile.style.display  = 'none';
+  editor.style.display  = 'block';
+  saveBtn.style.display = '';
+  delBtn.style.display  = '';
+  if (content !== undefined) {
+    editor.value = content;
+    dirty = false;
+  }
+}
+
+// ── interactions ──────────────────────────────────────────────────────────────
+document.getElementById('editor').addEventListener('input', () => { dirty = true; });
+
+document.getElementById('save-btn').addEventListener('click', async () => {
+  if (!activeProj || !activeFile) return;
+  const content = document.getElementById('editor').value;
+  await saveFile(activeProj, activeFile, content);
+  dirty = false;
+});
+
+document.getElementById('delete-file-btn').addEventListener('click', async () => {
+  if (!activeProj || !activeFile) return;
+  if (confirm(`Delete ${activeFile}?`)) await deleteFile(activeProj, activeFile);
+});
+
+document.getElementById('add-file-btn').addEventListener('click', () => openModal());
+
+// new project on Enter
+document.getElementById('new-project-input').addEventListener('keydown', async (e) => {
+  if (e.key !== 'Enter') return;
+  const name = e.target.value.trim();
+  if (!name) return;
+  e.target.value = '';
+  if (projects.includes(name)) { selectProject(name); return; }
+  // project is created lazily on first file upload; just add to list
+  projects.push(name);
+  renderProjects();
+  selectProject(name);
+});
+
+// ── modal ─────────────────────────────────────────────────────────────────────
+function openModal() {
+  const overlay = document.getElementById('modal');
+  const input   = document.getElementById('modal-input');
+  overlay.classList.remove('hidden');
+  input.value = '.env';
+  input.focus();
+  input.select();
+}
+
+function closeModal() {
+  document.getElementById('modal').classList.add('hidden');
+}
+
+document.getElementById('modal-cancel').addEventListener('click', closeModal);
+document.getElementById('modal').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) closeModal();
+});
+
+document.getElementById('modal-confirm').addEventListener('click', async () => {
+  const name = document.getElementById('modal-input').value.trim();
+  if (!name || !activeProj) { closeModal(); return; }
+  closeModal();
+  // create empty file on server
+  await saveFile(activeProj, name, '');
+  if (!files[activeProj]) files[activeProj] = [];
+  await loadFiles(activeProj);
+  renderFileTabs();
+  await selectFile(name);
+});
+
+document.getElementById('modal-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') document.getElementById('modal-confirm').click();
+  if (e.key === 'Escape') closeModal();
+});
+
+// keyboard save
+document.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+    e.preventDefault();
+    document.getElementById('save-btn').click();
+  }
+});
+
+// ── status ────────────────────────────────────────────────────────────────────
+let statusTimer;
+function showStatus(msg, isErr = false) {
+  const el = document.getElementById('status-msg');
+  el.textContent = msg;
+  el.className = 'show ' + (isErr ? 'err' : 'ok');
+  clearTimeout(statusTimer);
+  statusTimer = setTimeout(() => { el.className = ''; }, 2500);
+}
+
+// ── utils ─────────────────────────────────────────────────────────────────────
+function esc(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── init ──────────────────────────────────────────────────────────────────────
+loadProjects();
+</script>
+</body>
+</html>
