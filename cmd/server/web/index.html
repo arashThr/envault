@@ -340,6 +340,21 @@
   </div>
 </div>
 
+<!-- Modal for API key entry -->
+<div class="modal-overlay hidden" id="api-key-modal">
+  <div class="modal">
+    <h2>API Key</h2>
+    <p id="api-key-modal-msg" style="font-size:13px;color:var(--muted);margin-top:-4px;"></p>
+    <div style="position:relative;">
+      <input id="api-key-input" type="password" placeholder="Enter your API key" autocomplete="current-password" />
+      <button id="api-key-toggle" title="Show / hide" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--muted);font-size:14px;padding:0;">👁</button>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-confirm" id="api-key-confirm">Connect</button>
+    </div>
+  </div>
+</div>
+
 <script>
 // ── state ────────────────────────────────────────────────────────────────────
 let projects   = [];
@@ -349,15 +364,47 @@ let contents   = {};   // "project/file" -> string
 let activeFile = null;
 let dirty      = false;
 
-// ── api ───────────────────────────────────────────────────────────────────────
-const apiKey = localStorage.getItem('envault_api_key') || promptApiKey();
+// ── api key modal ─────────────────────────────────────────────────────────────
+let apiKey = localStorage.getItem('envault_api_key') || '';
+let _apiKeyResolve = null; // pending promise resolver when modal is open
 
-function promptApiKey() {
-  const key = window.prompt('Enter your Envault API key:');
-  if (key) localStorage.setItem('envault_api_key', key);
-  return key || '';
+function openApiKeyModal(message = '') {
+  return new Promise((resolve) => {
+    _apiKeyResolve = resolve;
+    const overlay = document.getElementById('api-key-modal');
+    const input   = document.getElementById('api-key-input');
+    const msg     = document.getElementById('api-key-modal-msg');
+    msg.textContent = message;
+    input.value = '';
+    overlay.classList.remove('hidden');
+    input.focus();
+  });
 }
 
+function closeApiKeyModal(key) {
+  document.getElementById('api-key-modal').classList.add('hidden');
+  if (_apiKeyResolve) { _apiKeyResolve(key); _apiKeyResolve = null; }
+}
+
+document.getElementById('api-key-confirm').addEventListener('click', () => {
+  const key = document.getElementById('api-key-input').value.trim();
+  if (!key) return;
+  apiKey = key;
+  localStorage.setItem('envault_api_key', key);
+  closeApiKeyModal(key);
+  loadProjects();
+});
+
+document.getElementById('api-key-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') document.getElementById('api-key-confirm').click();
+});
+
+document.getElementById('api-key-toggle').addEventListener('click', () => {
+  const input = document.getElementById('api-key-input');
+  input.type = input.type === 'password' ? 'text' : 'password';
+});
+
+// ── api ───────────────────────────────────────────────────────────────────────
 const headers = () => ({ 'X-API-Key': apiKey, 'Content-Type': 'text/plain' });
 
 // Extracts a human-readable error string from a non-ok response.
@@ -371,9 +418,16 @@ async function responseError(res) {
 
 async function apiFetch(path, opts = {}) {
   try {
-    return await fetch('/api' + path, { headers: headers(), ...opts });
+    const res = await fetch('/api' + path, { headers: headers(), ...opts });
+    if (res.status === 401) {
+      console.warn('apiFetch 401', path);
+      await openApiKeyModal('Incorrect or missing API key. Please try again.');
+      // After the user submits a new key, the modal calls loadProjects() itself.
+      // Return a synthetic response so callers can handle it gracefully.
+      return new Response(JSON.stringify({ error: 'unauthorized' }), { status: 401 });
+    }
+    return res;
   } catch (err) {
-    // Network-level failure (server unreachable, etc.)
     showStatus(`Network error: ${err.message}`, true);
     console.error('apiFetch network error', path, err);
     throw err;
@@ -673,7 +727,11 @@ function esc(s) {
 }
 
 // ── init ──────────────────────────────────────────────────────────────────────
-loadProjects();
+if (apiKey) {
+  loadProjects();
+} else {
+  openApiKeyModal('Enter your API key to connect to the server.');
+}
 </script>
 </body>
 </html>
