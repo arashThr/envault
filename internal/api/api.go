@@ -32,15 +32,6 @@ func New(s *store.Store, apiKey string, logger *slog.Logger) http.Handler {
 		r.Delete("/projects/{project}/files/{file}", deleteFile(s, logger))
 	})
 
-	logger.Debug("API router initialized", "routes", []string{
-		"GET /api/projects",
-		"DELETE /api/projects/{project}",
-		"GET /api/projects/{project}/files",
-		"GET /api/projects/{project}/files/{file}",
-		"PUT /api/projects/{project}/files/{file}",
-		"DELETE /api/projects/{project}/files/{file}",
-	})
-
 	return r
 }
 
