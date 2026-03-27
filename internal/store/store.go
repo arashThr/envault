@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -18,14 +19,15 @@ type FileInfo struct {
 // Layout: <dataDir>/<project>/<filename>
 type Store struct {
 	dataDir string
+	log     *slog.Logger
 }
 
 // New creates (or opens) a Store backed by dataDir.
-func New(dataDir string) (*Store, error) {
+func New(dataDir string, logger *slog.Logger) (*Store, error) {
 	if err := os.MkdirAll(dataDir, 0700); err != nil {
 		return nil, fmt.Errorf("create data dir: %w", err)
 	}
-	return &Store{dataDir: dataDir}, nil
+	return &Store{dataDir: dataDir, log: logger}, nil
 }
 
 // ListProjects returns all project names.
@@ -43,7 +45,7 @@ func (s *Store) ListProjects() ([]string, error) {
 	return projects, nil
 }
 
-// ListFiles returns all files for a project.
+// ListFiles returns metadata for all files under a project.
 func (s *Store) ListFiles(project string) ([]FileInfo, error) {
 	dir := filepath.Join(s.dataDir, project)
 	entries, err := os.ReadDir(dir)
@@ -67,7 +69,7 @@ func (s *Store) ListFiles(project string) ([]FileInfo, error) {
 	return files, nil
 }
 
-// GetFile returns the content of a file.
+// GetFile returns the content of a stored file.
 func (s *Store) GetFile(project, filename string) ([]byte, error) {
 	path := filepath.Join(s.dataDir, project, filename)
 	data, err := os.ReadFile(path)
@@ -89,19 +91,32 @@ func (s *Store) PutFile(project, filename string, content []byte) error {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, filename), content, 0600)
+	path := filepath.Join(dir, filename)
+	if err := os.WriteFile(path, content, 0600); err != nil {
+		return err
+	}
+	s.log.Info("file stored", "project", project, "file", filename, "bytes", len(content))
+	return nil
 }
 
 // DeleteFile removes a single file.
 func (s *Store) DeleteFile(project, filename string) error {
 	path := filepath.Join(s.dataDir, project, filename)
-	return os.Remove(path)
+	if err := os.Remove(path); err != nil {
+		return err
+	}
+	s.log.Info("file deleted", "project", project, "file", filename)
+	return nil
 }
 
 // DeleteProject removes a project and all its files.
 func (s *Store) DeleteProject(project string) error {
 	dir := filepath.Join(s.dataDir, project)
-	return os.RemoveAll(dir)
+	if err := os.RemoveAll(dir); err != nil {
+		return err
+	}
+	s.log.Info("project deleted", "project", project)
+	return nil
 }
 
 // validateName ensures names don't escape the data directory.

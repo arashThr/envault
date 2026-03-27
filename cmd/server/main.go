@@ -5,9 +5,10 @@ import (
 	"flag"
 	"fmt"
 	"io/fs"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/arashthr/envault/internal/api"
 	"github.com/arashthr/envault/internal/store"
@@ -22,30 +23,48 @@ func main() {
 	apiKey  := flag.String("key",  envOr("API_KEY", ""),  "API key for authentication")
 	flag.Parse()
 
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	}))
+	slog.SetDefault(logger)
+
 	if *apiKey == "" {
-		fmt.Fprintln(os.Stderr, "error: API_KEY is required (-key flag or API_KEY env var)")
+		logger.Error("API_KEY is required", "hint", "use -key flag or API_KEY env var")
 		os.Exit(1)
 	}
 
-	s, err := store.New(*dataDir)
+	s, err := store.New(*dataDir, logger)
 	if err != nil {
-		log.Fatalf("store: %v", err)
+		logger.Error("failed to open store", "err", err)
+		os.Exit(1)
 	}
-
-	a := api.New(s, *apiKey)
+	logger.Info("store ready", "dir", *dataDir)
 
 	webRoot, err := fs.Sub(webFiles, "web")
 	if err != nil {
-		log.Fatalf("web embed: %v", err)
+		logger.Error("web embed failed", "err", err)
+		os.Exit(1)
 	}
 
 	mux := http.NewServeMux()
-	mux.Handle("/api/", a)
+	mux.Handle("/api/", api.New(s, *apiKey, logger))
 	mux.Handle("/", http.FileServer(http.FS(webRoot)))
 
 	addr := ":" + *port
-	log.Printf("envault server listening on http://localhost%s", addr)
-	log.Fatal(http.ListenAndServe(addr, mux))
+	srv := &http.Server{
+		Addr:         addr,
+		Handler:      mux,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+
+	logger.Info("envault server starting", "addr", "http://localhost"+addr)
+	if err := srv.ListenAndServe(); err != nil {
+		logger.Error("server stopped", "err", err)
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 }
 
 func envOr(key, def string) string {
