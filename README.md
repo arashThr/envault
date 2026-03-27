@@ -8,16 +8,25 @@ A self-hosted `.env` file manager. Store secrets securely in one place, symlink 
 - A symlink is created in your working directory pointing to the cached file
 - The server acts as a remote backup you can push to and pull from
 
+## Build
+
+```bash
+make          # builds bin/envault-server and bin/envault
+make test     # runs all tests with race detector
+make clean    # removes bin/
+```
+
 ## Running the server
 
 ```bash
-go build -o envault-server ./cmd/server
+make server   # or: go build -o bin/envault-server ./cmd/server
 
-API_KEY=your-secret-key ./envault-server
+API_KEY=your-secret-key bin/envault-server
 # options:
 #   -port  PORT     (default 8080, or $PORT)
 #   -data  DIR      (default ./data, or $DATA_DIR)
 #   -key   KEY      (required, or $API_KEY)
+#   -debug          verbose logging (or DEBUG=true)
 ```
 
 Open `http://localhost:8080` to access the web UI.
@@ -25,7 +34,7 @@ Open `http://localhost:8080` to access the web UI.
 ## CLI setup
 
 ```bash
-go build -o envault ./cmd/envault
+make cli      # or: go build -o bin/envault ./cmd/envault
 
 envault config set server http://your-server:8080
 envault config set key your-secret-key

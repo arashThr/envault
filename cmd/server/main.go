@@ -18,24 +18,34 @@ import (
 var webFiles embed.FS
 
 func main() {
-	port    := flag.String("port", envOr("PORT", "8080"), "listen port")
-	dataDir := flag.String("data", envOr("DATA_DIR", "./data"), "directory to store env files")
-	apiKey  := flag.String("key",  envOr("API_KEY", ""),  "API key for authentication")
+	port    := flag.String("port",  envOr("PORT", "8080"),   "listen port")
+	dataDir := flag.String("data",  envOr("DATA_DIR", "./data"), "directory to store env files")
+	apiKey  := flag.String("key",   envOr("API_KEY", ""),    "API key for authentication")
+	debug   := flag.Bool("debug",   envOr("DEBUG", "") == "true", "enable debug logging")
 	flag.Parse()
 
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
-	}))
+	level := slog.LevelInfo
+	if *debug {
+		level = slog.LevelDebug
+	}
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
 	slog.SetDefault(logger)
 
+	logger.Info("envault starting",
+		"port", *port,
+		"data_dir", *dataDir,
+		"debug", *debug,
+	)
+
 	if *apiKey == "" {
-		logger.Error("API_KEY is required", "hint", "use -key flag or API_KEY env var")
+		logger.Error("API_KEY is required — set via -key flag or API_KEY environment variable")
 		os.Exit(1)
 	}
+	logger.Debug("configuration loaded", "key_len", len(*apiKey))
 
 	s, err := store.New(*dataDir, logger)
 	if err != nil {
-		logger.Error("failed to open store", "err", err)
+		logger.Error("failed to open store", "dir", *dataDir, "err", err)
 		os.Exit(1)
 	}
 	logger.Info("store ready", "dir", *dataDir)
@@ -45,6 +55,7 @@ func main() {
 		logger.Error("web embed failed", "err", err)
 		os.Exit(1)
 	}
+	logger.Debug("web UI embedded and ready")
 
 	mux := http.NewServeMux()
 	mux.Handle("/api/", api.New(s, *apiKey, logger))
@@ -59,9 +70,9 @@ func main() {
 		IdleTimeout:  60 * time.Second,
 	}
 
-	logger.Info("envault server starting", "addr", "http://localhost"+addr)
+	logger.Info("server listening", "addr", "http://localhost"+addr)
 	if err := srv.ListenAndServe(); err != nil {
-		logger.Error("server stopped", "err", err)
+		logger.Error("server stopped unexpectedly", "err", err)
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
