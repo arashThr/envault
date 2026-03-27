@@ -359,24 +359,50 @@ function promptApiKey() {
 }
 
 const headers = () => ({ 'X-API-Key': apiKey, 'Content-Type': 'text/plain' });
-const jsonHeaders = () => ({ 'X-API-Key': apiKey, 'Content-Type': 'application/json' });
+
+// Extracts a human-readable error string from a non-ok response.
+async function responseError(res) {
+  try {
+    const body = await res.clone().json();
+    if (body.error) return body.error;
+  } catch (_) {}
+  return res.statusText || String(res.status);
+}
 
 async function apiFetch(path, opts = {}) {
-  const res = await fetch('/api' + path, { headers: headers(), ...opts });
-  return res;
+  try {
+    return await fetch('/api' + path, { headers: headers(), ...opts });
+  } catch (err) {
+    // Network-level failure (server unreachable, etc.)
+    showStatus(`Network error: ${err.message}`, true);
+    console.error('apiFetch network error', path, err);
+    throw err;
+  }
 }
 
 async function loadProjects() {
-  const res = await apiFetch('/projects');
-  if (!res.ok) { showStatus('Failed to load projects', true); return; }
+  let res;
+  try { res = await apiFetch('/projects'); } catch (_) { return; }
+  if (!res.ok) {
+    const err = await responseError(res);
+    showStatus(`Failed to load projects: ${res.status} — ${err}`, true);
+    console.error('loadProjects failed', res.status, err);
+    return;
+  }
   const data = await res.json();
   projects = data.projects || [];
   renderProjects();
 }
 
 async function loadFiles(project) {
-  const res = await apiFetch(`/projects/${encodeURIComponent(project)}/files`);
-  if (!res.ok) { files[project] = []; return; }
+  let res;
+  try { res = await apiFetch(`/projects/${encodeURIComponent(project)}/files`); } catch (_) { files[project] = []; return; }
+  if (!res.ok) {
+    const err = await responseError(res);
+    console.warn('loadFiles failed', project, res.status, err);
+    files[project] = [];
+    return;
+  }
   const data = await res.json();
   files[project] = data.files || [];
 }
@@ -384,19 +410,31 @@ async function loadFiles(project) {
 async function loadFileContent(project, file) {
   const key = `${project}/${file}`;
   if (contents[key] !== undefined) return contents[key];
-  const res = await apiFetch(`/projects/${encodeURIComponent(project)}/files/${encodeURIComponent(file)}`);
-  if (!res.ok) return '';
+  let res;
+  try { res = await apiFetch(`/projects/${encodeURIComponent(project)}/files/${encodeURIComponent(file)}`); } catch (_) { return ''; }
+  if (!res.ok) {
+    const err = await responseError(res);
+    console.warn('loadFileContent failed', project, file, res.status, err);
+    return '';
+  }
   const text = await res.text();
   contents[key] = text;
   return text;
 }
 
 async function saveFile(project, file, content) {
-  const res = await apiFetch(
-    `/projects/${encodeURIComponent(project)}/files/${encodeURIComponent(file)}`,
-    { method: 'PUT', body: content }
-  );
-  if (!res.ok) { showStatus('Save failed', true); return; }
+  let res;
+  try {
+    res = await apiFetch(
+      `/projects/${encodeURIComponent(project)}/files/${encodeURIComponent(file)}`,
+      { method: 'PUT', body: content }
+    );
+  } catch (_) { return; }
+  if (!res.ok) {
+    const err = await responseError(res);
+    showStatus(`Save failed: ${res.status} — ${err}`, true);
+    return;
+  }
   contents[`${project}/${file}`] = content;
   // refresh file list
   await loadFiles(project);
@@ -405,11 +443,13 @@ async function saveFile(project, file, content) {
 }
 
 async function deleteFile(project, file) {
-  const res = await apiFetch(
-    `/projects/${encodeURIComponent(project)}/files/${encodeURIComponent(file)}`,
-    { method: 'DELETE' }
-  );
-  if (!res.ok) { showStatus('Delete failed', true); return; }
+  let res;
+  try { res = await apiFetch(`/projects/${encodeURIComponent(project)}/files/${encodeURIComponent(file)}`, { method: 'DELETE' }); } catch (_) { return; }
+  if (!res.ok) {
+    const err = await responseError(res);
+    showStatus(`Delete failed: ${res.status} — ${err}`, true);
+    return;
+  }
   delete contents[`${project}/${file}`];
   await loadFiles(project);
   activeFile = null;
@@ -419,8 +459,13 @@ async function deleteFile(project, file) {
 }
 
 async function deleteProject(project) {
-  const res = await apiFetch(`/projects/${encodeURIComponent(project)}`, { method: 'DELETE' });
-  if (!res.ok) { showStatus('Delete failed', true); return; }
+  let res;
+  try { res = await apiFetch(`/projects/${encodeURIComponent(project)}`, { method: 'DELETE' }); } catch (_) { return; }
+  if (!res.ok) {
+    const err = await responseError(res);
+    showStatus(`Delete project failed: ${res.status} — ${err}`, true);
+    return;
+  }
   projects = projects.filter(p => p !== project);
   delete files[project];
   if (activeProj === project) {

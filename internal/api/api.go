@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -13,25 +14,31 @@ import (
 )
 
 // New builds a chi router with all API routes mounted under /api.
-// The caller should mount it at "/api/*" or use it as the full mux.
 func New(s *store.Store, apiKey string, logger *slog.Logger) http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Recoverer)
 	r.Use(requestLogger(logger))
-	r.Use(authMiddleware(apiKey))
+	r.Use(authMiddleware(apiKey, logger))
 
 	r.Route("/api", func(r chi.Router) {
-		// Projects
-		r.Get("/projects", listProjects(s))
-		r.Delete("/projects/{project}", deleteProject(s))
+		r.Get("/projects", listProjects(s, logger))
+		r.Delete("/projects/{project}", deleteProject(s, logger))
 
-		// Files within a project
-		r.Get("/projects/{project}/files", listFiles(s))
-		r.Get("/projects/{project}/files/{file}", getFile(s))
-		r.Put("/projects/{project}/files/{file}", putFile(s))
-		r.Delete("/projects/{project}/files/{file}", deleteFile(s))
+		r.Get("/projects/{project}/files", listFiles(s, logger))
+		r.Get("/projects/{project}/files/{file}", getFile(s, logger))
+		r.Put("/projects/{project}/files/{file}", putFile(s, logger))
+		r.Delete("/projects/{project}/files/{file}", deleteFile(s, logger))
+	})
+
+	logger.Debug("API router initialized", "routes", []string{
+		"GET /api/projects",
+		"DELETE /api/projects/{project}",
+		"GET /api/projects/{project}/files",
+		"GET /api/projects/{project}/files/{file}",
+		"PUT /api/projects/{project}/files/{file}",
+		"DELETE /api/projects/{project}/files/{file}",
 	})
 
 	return r
@@ -39,7 +46,7 @@ func New(s *store.Store, apiKey string, logger *slog.Logger) http.Handler {
 
 // ── middleware ────────────────────────────────────────────────────────────────
 
-func authMiddleware(apiKey string) func(http.Handler) http.Handler {
+func authMiddleware(apiKey string, logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			key := r.Header.Get("X-API-Key")
@@ -49,6 +56,13 @@ func authMiddleware(apiKey string) func(http.Handler) http.Handler {
 				}
 			}
 			if key != apiKey {
+				logger.Warn("authentication failed",
+					"remote_addr", r.RemoteAddr,
+					"method", r.Method,
+					"path", r.URL.Path,
+					"has_key", key != "",
+					"id", middleware.GetReqID(r.Context()),
+				)
 				writeError(w, http.StatusUnauthorized, "unauthorized")
 				return
 			}
@@ -60,13 +74,34 @@ func authMiddleware(apiKey string) func(http.Handler) http.Handler {
 func requestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			start := time.Now()
 			ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
+
+			logger.Debug("request started",
+				"method", r.Method,
+				"path", r.URL.Path,
+				"remote_addr", r.RemoteAddr,
+				"user_agent", r.UserAgent(),
+				"id", middleware.GetReqID(r.Context()),
+			)
+
 			next.ServeHTTP(ww, r)
-			logger.Info("request",
+
+			duration := time.Since(start)
+			level := slog.LevelInfo
+			if ww.Status() >= 500 {
+				level = slog.LevelError
+			} else if ww.Status() >= 400 {
+				level = slog.LevelWarn
+			}
+
+			logger.Log(r.Context(), level, "request completed",
 				"method", r.Method,
 				"path", r.URL.Path,
 				"status", ww.Status(),
 				"bytes", ww.BytesWritten(),
+				"duration_ms", duration.Milliseconds(),
+				"remote_addr", r.RemoteAddr,
 				"id", middleware.GetReqID(r.Context()),
 			)
 		})
@@ -75,10 +110,11 @@ func requestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 
 // ── handlers ──────────────────────────────────────────────────────────────────
 
-func listProjects(s *store.Store) http.HandlerFunc {
+func listProjects(s *store.Store, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		projects, err := s.ListProjects()
 		if err != nil {
+			logger.Error("list projects failed", "err", err, "id", middleware.GetReqID(r.Context()))
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -89,10 +125,11 @@ func listProjects(s *store.Store) http.HandlerFunc {
 	}
 }
 
-func deleteProject(s *store.Store) http.HandlerFunc {
+func deleteProject(s *store.Store, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		project := chi.URLParam(r, "project")
 		if err := s.DeleteProject(project); err != nil {
+			logger.Error("delete project failed", "project", project, "err", err, "id", middleware.GetReqID(r.Context()))
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -100,11 +137,12 @@ func deleteProject(s *store.Store) http.HandlerFunc {
 	}
 }
 
-func listFiles(s *store.Store) http.HandlerFunc {
+func listFiles(s *store.Store, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		project := chi.URLParam(r, "project")
 		files, err := s.ListFiles(project)
 		if err != nil {
+			logger.Warn("list files failed", "project", project, "err", err, "id", middleware.GetReqID(r.Context()))
 			writeError(w, http.StatusNotFound, err.Error())
 			return
 		}
@@ -115,12 +153,13 @@ func listFiles(s *store.Store) http.HandlerFunc {
 	}
 }
 
-func getFile(s *store.Store) http.HandlerFunc {
+func getFile(s *store.Store, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		project := chi.URLParam(r, "project")
 		file := chi.URLParam(r, "file")
 		content, err := s.GetFile(project, file)
 		if err != nil {
+			logger.Warn("get file failed", "project", project, "file", file, "err", err, "id", middleware.GetReqID(r.Context()))
 			writeError(w, http.StatusNotFound, err.Error())
 			return
 		}
@@ -129,16 +168,18 @@ func getFile(s *store.Store) http.HandlerFunc {
 	}
 }
 
-func putFile(s *store.Store) http.HandlerFunc {
+func putFile(s *store.Store, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		project := chi.URLParam(r, "project")
 		file := chi.URLParam(r, "file")
 		content, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 		if err != nil {
+			logger.Error("failed to read request body", "project", project, "file", file, "err", err, "id", middleware.GetReqID(r.Context()))
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		if err := s.PutFile(project, file, content); err != nil {
+			logger.Error("put file failed", "project", project, "file", file, "err", err, "id", middleware.GetReqID(r.Context()))
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -146,11 +187,12 @@ func putFile(s *store.Store) http.HandlerFunc {
 	}
 }
 
-func deleteFile(s *store.Store) http.HandlerFunc {
+func deleteFile(s *store.Store, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		project := chi.URLParam(r, "project")
 		file := chi.URLParam(r, "file")
 		if err := s.DeleteFile(project, file); err != nil {
+			logger.Error("delete file failed", "project", project, "file", file, "err", err, "id", middleware.GetReqID(r.Context()))
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
