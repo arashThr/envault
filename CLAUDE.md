@@ -130,7 +130,10 @@ go test ./internal/store/... -run TestPutFile  # single test
 ## Running locally
 
 ```bash
-# server
+# build both binaries into bin/
+make build
+
+# or run directly
 go run ./cmd/server -key mysecretkey
 
 # with debug logging
@@ -141,6 +144,23 @@ go run ./cmd/envault config set server http://localhost:8080
 go run ./cmd/envault config set key mysecretkey
 go run ./cmd/envault new cool-project
 ```
+
+## Makefile targets
+
+| Target       | Description                              |
+|--------------|------------------------------------------|
+| `make`       | Build everything (default)               |
+| `make build` | Build server + CLI into `bin/`           |
+| `make server`| Build `bin/envault-server` only          |
+| `make cli`   | Build `bin/envault` only                 |
+| `make test`  | Run `go test ./... -v -race -count=1`    |
+| `make clean` | Remove `bin/`                            |
+
+## CI
+
+GitHub Actions workflow at `.github/workflows/ci.yml` runs on every push to `main`
+and on every pull request targeting `main`. Steps: checkout → setup Go (version from
+`go.mod`) → `go build ./...` → `go test ./... -v -race -count=1`.
 
 ## Future work / known gaps
 
