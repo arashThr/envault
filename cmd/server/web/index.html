@@ -9,72 +9,50 @@
 <body>
 
 <header>
-  <div class="logo">env<span>vault</span></div>
-  <div class="tagline">secure .env manager</div>
-  <div class="spacer"></div>
-  <div id="status-msg"></div>
+  <h1>env<span>vault</span></h1>
+  <div id="status"></div>
 </header>
 
-<div class="layout">
-  <aside>
-    <div class="sidebar-title">Projects</div>
+<div class="app">
+  <nav class="sidebar">
+    <div class="sidebar-label">Projects</div>
     <div class="project-list" id="project-list"></div>
-    <div class="new-project-row">
-      <input id="new-project-input" type="text" placeholder="+ new project…" />
+    <div class="sidebar-footer">
+      <input id="new-project" type="text" placeholder="New project…" />
     </div>
-  </aside>
+  </nav>
 
-  <main>
-    <div id="no-project" class="empty-state">
-      <div class="big">🔐</div>
-      <p>Select a project or create one to get started.</p>
+  <div class="main">
+    <div class="toolbar" id="toolbar">
+      <span class="empty" style="height:auto;color:var(--muted);">Select a project</span>
     </div>
-
-    <div id="project-view" style="display:none; flex-direction:column; flex:1; overflow:hidden;">
-      <div class="file-bar" id="file-bar">
-        <span class="proj-label" id="proj-label"></span>
-        <div id="file-tabs"></div>
-        <button class="add-file-btn" id="add-file-btn">+ file</button>
-        <div class="spacer"></div>
-        <button class="action-btn btn-save"   id="save-btn">Save</button>
-        <button class="action-btn btn-delete" id="delete-file-btn">Delete file</button>
-      </div>
-      <div class="editor-area" id="editor-area">
-        <div id="no-file" class="empty-state" style="flex:1;">
-          <div class="big">📄</div>
-          <p>Add or select a file above.</p>
-        </div>
-        <textarea id="editor" style="display:none;" spellcheck="false"
-          placeholder="# Add your environment variables here&#10;DATABASE_URL=postgres://...&#10;SECRET_KEY=..."></textarea>
-      </div>
-    </div>
-  </main>
+    <textarea id="editor" placeholder="Select a file to edit…" disabled></textarea>
+  </div>
 </div>
 
 <!-- Modal: new file -->
-<div class="modal-overlay hidden" id="modal">
+<div class="overlay hidden" id="file-modal">
   <div class="modal">
     <h2>New file</h2>
-    <input id="modal-input" type="text" placeholder=".env" value=".env" />
-    <div class="modal-actions">
-      <button class="btn-cancel"  id="modal-cancel">Cancel</button>
-      <button class="btn-confirm" id="modal-confirm">Create</button>
+    <input id="file-name" type="text" placeholder=".env" />
+    <div class="modal-row">
+      <button class="btn-ghost" id="file-cancel">Cancel</button>
+      <button class="btn btn-primary" id="file-confirm">Create</button>
     </div>
   </div>
 </div>
 
 <!-- Modal: API key -->
-<div class="modal-overlay hidden" id="api-key-modal">
+<div class="overlay hidden" id="key-modal">
   <div class="modal">
     <h2>API Key</h2>
-    <p id="api-key-modal-msg" style="font-size:13px;color:var(--muted);margin-top:-4px;"></p>
-    <div style="position:relative;">
-      <input id="api-key-input" type="password" placeholder="Enter your API key" autocomplete="current-password" />
-      <button id="api-key-toggle" title="Show / hide"
-        style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--muted);font-size:14px;padding:0;">👁</button>
+    <p id="key-msg"></p>
+    <div class="key-wrap">
+      <input id="key-input" type="password" placeholder="Enter your API key" autocomplete="current-password" />
+      <button id="key-toggle">👁</button>
     </div>
-    <div class="modal-actions">
-      <button class="btn-confirm" id="api-key-confirm">Connect</button>
+    <div class="modal-row">
+      <button class="btn btn-primary" id="key-confirm">Connect</button>
     </div>
   </div>
 </div>
