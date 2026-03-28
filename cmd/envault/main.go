@@ -53,21 +53,33 @@ func main() {
 
 // ── commands ─────────────────────────────────────────────────────────────────
 
-// new <project> [file]
-// Creates an empty env file in the local secrets cache and symlinks it into cwd.
+// new [project] [file]
+// Creates an env file in the local secrets cache and symlinks it into cwd.
+// If a real file already exists in cwd it is moved to the vault automatically.
 func runNew(args []string) {
 	project, file := parseProjectFile(args)
 	localPath := localSecretPath(project, file)
 
 	if _, err := os.Stat(localPath); err == nil {
-		fatalf("secret already exists locally: %s\n", localPath)
+		fatalf("secret already exists in vault: %s\n", localPath)
 	}
 
-	linkPath := filepath.Join(mustCwd(), file)
-	if _, err := os.Lstat(linkPath); err == nil {
-		fatalf("file already exists in current directory: %s\n", linkPath)
+	cwd := mustCwd()
+	linkPath := filepath.Join(cwd, file)
+
+	info, err := os.Lstat(linkPath)
+	if err == nil {
+		// Something already exists at linkPath.
+		if info.Mode()&os.ModeSymlink != 0 {
+			fatalf("%s is already a symlink — run `envault push` to upload it\n", file)
+		}
+		// Real file: adopt it into the vault.
+		moveToVault(linkPath, localPath, project, file)
+		fmt.Println("Run `envault push` to upload it to the server.")
+		return
 	}
 
+	// No existing file — create a new empty one.
 	if err := os.MkdirAll(filepath.Dir(localPath), 0700); err != nil {
 		fatalf("mkdir: %v\n", err)
 	}
@@ -85,13 +97,23 @@ func runNew(args []string) {
 	fmt.Println("Edit the file, then run `envault push` to upload it to the server.")
 }
 
-// push <project> [file]
-// Reads the local secret, encrypts it, and uploads the ciphertext to the server.
+// push [project] [file]
+// Encrypts the local secret and uploads the ciphertext to the server.
+// If a real file exists in cwd but not in the vault, it is adopted first.
 func runPush(args []string) {
 	project, file := parseProjectFile(args)
 	cfg := mustConfig()
 
 	localPath := localSecretPath(project, file)
+
+	// If the vault file is missing but a real file sits in cwd, adopt it.
+	if _, err := os.Stat(localPath); os.IsNotExist(err) {
+		linkPath := filepath.Join(mustCwd(), file)
+		if info, err := os.Lstat(linkPath); err == nil && info.Mode()&os.ModeSymlink == 0 {
+			moveToVault(linkPath, localPath, project, file)
+		}
+	}
+
 	plaintext, err := os.ReadFile(localPath)
 	if err != nil {
 		fatalf("read local file: %v\n", err)
@@ -475,12 +497,37 @@ func mustConfig() config {
 
 // ── misc helpers ──────────────────────────────────────────────────────────────
 
+// moveToVault moves a real file from srcPath into the vault at dstPath and
+// replaces it with a symlink. It prints what it's doing so the user is informed.
+func moveToVault(srcPath, dstPath, project, file string) {
+	fmt.Printf("Found existing %s — moving to vault and creating symlink.\n", file)
+	fmt.Printf("  project: %s\n", project)
+	fmt.Printf("  vault  : %s\n", dstPath)
+	fmt.Printf("  symlink: %s\n", srcPath)
+	fmt.Println()
+
+	if err := os.MkdirAll(filepath.Dir(dstPath), 0700); err != nil {
+		fatalf("mkdir vault: %v\n", err)
+	}
+	if err := os.Rename(srcPath, dstPath); err != nil {
+		fatalf("move to vault: %v\n", err)
+	}
+	if err := os.Chmod(dstPath, 0600); err != nil {
+		fatalf("chmod: %v\n", err)
+	}
+	if err := os.Symlink(dstPath, srcPath); err != nil {
+		fatalf("symlink: %v\n", err)
+	}
+}
+
 func parseProjectFile(args []string) (project, file string) {
+	file = defaultFile
 	if len(args) == 0 {
-		fatalf("usage: envault <command> <project> [file]\n")
+		// Default project name = current directory name
+		project = filepath.Base(mustCwd())
+		return
 	}
 	project = args[0]
-	file = defaultFile
 	if len(args) >= 2 {
 		file = args[1]
 	}
@@ -514,9 +561,9 @@ USAGE:
   envault <command> [arguments]
 
 COMMANDS:
-  new  <project> [file]   Create a new env file locally and symlink it into cwd
-  push <project> [file]   Encrypt and upload local env file to the server
-  pull <project> [file]   Download and decrypt env file from server; symlink into cwd
+  new  [project] [file]   Create a new env file locally and symlink it into cwd
+  push [project] [file]   Encrypt and upload local env file to the server
+  pull [project] [file]   Download and decrypt env file from server; symlink into cwd
   link <project> [file]   Symlink a cached env file into cwd
   list [project]          List projects (or files within a project)
   sync                    Encrypt and push all locally cached env files to the server
@@ -526,7 +573,8 @@ COMMANDS:
   config set key <key>    Set the API key
 
 DEFAULTS:
-  file defaults to ".env" when not specified
+  project defaults to the current directory name when not specified
+  file    defaults to ".env" when not specified
 
 EXAMPLES:
   envault config set server http://localhost:8080
