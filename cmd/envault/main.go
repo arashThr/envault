@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -73,7 +74,8 @@ func runNew(args []string) {
 		if info.Mode()&os.ModeSymlink != 0 {
 			fatalf("%s is already a symlink — run `envault push` to upload it\n", file)
 		}
-		// Real file: adopt it into the vault.
+		// Real file: confirm, then adopt into the vault.
+		confirmAdopt(file, project, localPath)
 		moveToVault(linkPath, localPath, project, file)
 		fmt.Println("Run `envault push` to upload it to the server.")
 		return
@@ -99,17 +101,23 @@ func runNew(args []string) {
 
 // push [project] [file]
 // Encrypts the local secret and uploads the ciphertext to the server.
-// If a real file exists in cwd but not in the vault, it is adopted first.
+// If a real file exists in cwd but not in the vault, the user is asked to
+// confirm before it is adopted. Auth is verified before any files are moved.
 func runPush(args []string) {
 	project, file := parseProjectFile(args)
 	cfg := mustConfig()
 
 	localPath := localSecretPath(project, file)
 
-	// If the vault file is missing but a real file sits in cwd, adopt it.
+	// If the vault file is missing but a real file sits in cwd, adopt it —
+	// but only after verifying credentials and getting user confirmation.
 	if _, err := os.Stat(localPath); os.IsNotExist(err) {
 		linkPath := filepath.Join(mustCwd(), file)
 		if info, err := os.Lstat(linkPath); err == nil && info.Mode()&os.ModeSymlink == 0 {
+			if err := checkAuth(cfg); err != nil {
+				fatalf("authentication failed: %v\n", err)
+			}
+			confirmAdopt(file, project, localPath)
 			moveToVault(linkPath, localPath, project, file)
 		}
 	}
@@ -497,14 +505,46 @@ func mustConfig() config {
 
 // ── misc helpers ──────────────────────────────────────────────────────────────
 
+// checkAuth makes a lightweight request to verify the configured API key.
+func checkAuth(cfg config) error {
+	req, _ := http.NewRequest(http.MethodGet, cfg.Server+"/api/projects", nil)
+	req.Header.Set("X-API-Key", cfg.APIKey)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("could not reach server: %w", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized {
+		return fmt.Errorf("wrong API key")
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("server returned %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// confirmAdopt prompts the user to confirm moving a file into the vault.
+// It exits if the user declines.
+func confirmAdopt(file, project, vaultPath string) {
+	fmt.Printf("Found existing %s in the current directory.\n", file)
+	fmt.Printf("  It will be moved to the vault as project %q:\n", project)
+	fmt.Printf("  %s\n", vaultPath)
+	fmt.Printf("  A symlink will replace it in the current directory.\n")
+	fmt.Print("Proceed? [y/N] ")
+
+	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Scan()
+	answer := strings.TrimSpace(strings.ToLower(scanner.Text()))
+	if answer != "y" && answer != "yes" {
+		fmt.Println("Aborted.")
+		os.Exit(0)
+	}
+}
+
 // moveToVault moves a real file from srcPath into the vault at dstPath and
 // replaces it with a symlink. It prints what it's doing so the user is informed.
 func moveToVault(srcPath, dstPath, project, file string) {
-	fmt.Printf("Found existing %s — moving to vault and creating symlink.\n", file)
-	fmt.Printf("  project: %s\n", project)
-	fmt.Printf("  vault  : %s\n", dstPath)
-	fmt.Printf("  symlink: %s\n", srcPath)
-	fmt.Println()
+	fmt.Printf("Moving %s/%s to vault...\n", project, file)
 
 	if err := os.MkdirAll(filepath.Dir(dstPath), 0700); err != nil {
 		fatalf("mkdir vault: %v\n", err)

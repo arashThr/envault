@@ -22,21 +22,18 @@ export default function App() {
   const [showFileModal, setShowFileModal] = useState(false)
 
   // Single password — used for both auth (X-API-Key) and encryption passphrase.
-  // Never persisted to any storage; user re-enters after page refresh.
-  const [password, setPassword]       = useState('')
-  const [modalMsg, setModalMsg]       = useState('Enter your password to connect.')
+  // Stored in sessionStorage so page refreshes within the same tab don't
+  // require re-entry. Cleared automatically when the tab/browser is closed.
+  const [password, setPassword]       = useState(() => sessionStorage.getItem('envault_pw') ?? '')
+  const [modalMsg, setModalMsg]       = useState('')
   const passwordResolveRef = useRef<((pw: string) => void) | null>(null)
 
   // Wire the unauthorised handler once on mount
   useEffect(() => {
     api.setUnauthorizedHandler(() => new Promise<void>(resolve => {
-      // Wrap resolve so we can also update the password state when re-entering
-      const wrapped = () => resolve()
-      passwordResolveRef.current = (pw: string) => {
-        api.setApiKey(pw)
-        setPassword(pw)
-        wrapped()
-      }
+      sessionStorage.removeItem('envault_pw')
+      setPassword('')
+      passwordResolveRef.current = (_pw: string) => resolve()
       setModalMsg('Wrong password. Please try again.')
     }))
   }, [])
@@ -62,6 +59,7 @@ export default function App() {
   }
 
   function handlePasswordSubmit(pw: string) {
+    sessionStorage.setItem('envault_pw', pw)
     setPassword(pw)
     api.setApiKey(pw)
     setModalMsg('')
@@ -256,7 +254,7 @@ export default function App() {
 
       {showModal && (
         <PasswordModal
-          message={modalMsg || 'Enter your password to connect.'}
+          message={modalMsg || 'Enter your password to connect to the vault.'}
           onSubmit={handlePasswordSubmit}
         />
       )}
