@@ -1,11 +1,13 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import * as api from './api'
+import { isAgeEncrypted, encryptWithPassphrase, decryptWithPassphrase } from './crypto'
 import type { FileInfo, Status } from './types'
 import Sidebar from './components/Sidebar'
 import Toolbar from './components/Toolbar'
 import Editor from './components/Editor'
 import StatusBar from './components/StatusBar'
 import ApiKeyModal from './components/ApiKeyModal'
+import PassphraseModal from './components/PassphraseModal'
 import FileModal from './components/FileModal'
 
 export default function App() {
@@ -23,6 +25,11 @@ export default function App() {
   const [apiKey, setApiKeyState] = useState(() => localStorage.getItem('envault_api_key') ?? '')
   const [keyModalMsg, setKeyModalMsg] = useState('')
   const keyResolveRef = useRef<(() => void) | null>(null)
+
+  // Passphrase — kept in memory only, never persisted
+  const [passphrase, setPassphrase] = useState('')
+  const [passphraseModalMsg, setPassphraseModalMsg] = useState('')
+  const passphraseResolveRef = useRef<((pp: string) => void) | null>(null)
 
   // Wire the unauthorised handler once on mount
   useEffect(() => {
@@ -44,6 +51,24 @@ export default function App() {
 
   function notify(message: string, isError = false) {
     setStatus({ message, isError })
+  }
+
+  // ── passphrase ────────────────────────────────────────────────────────────────
+
+  /** Returns the current passphrase, prompting via modal if not yet set. */
+  function requirePassphrase(msg = 'Enter your encryption passphrase to continue.'): Promise<string> {
+    if (passphrase) return Promise.resolve(passphrase)
+    return new Promise<string>(resolve => {
+      passphraseResolveRef.current = resolve
+      setPassphraseModalMsg(msg)
+    })
+  }
+
+  function handlePassphraseSubmit(pp: string) {
+    setPassphrase(pp)
+    setPassphraseModalMsg('')
+    passphraseResolveRef.current?.(pp)
+    passphraseResolveRef.current = null
   }
 
   // ── data loading ─────────────────────────────────────────────────────────────
@@ -69,7 +94,21 @@ export default function App() {
     const key = `${project}/${file}`
     if (contents[key] !== undefined) return contents[key]
     try {
-      const text = await api.getFile(project, file)
+      const bytes = await api.getFile(project, file)
+      let text: string
+      if (isAgeEncrypted(bytes)) {
+        const pp = await requirePassphrase()
+        try {
+          text = await decryptWithPassphrase(bytes, pp)
+        } catch {
+          // Wrong passphrase — clear it so next attempt re-prompts
+          setPassphrase('')
+          notify('Wrong passphrase — please try again.', true)
+          return ''
+        }
+      } else {
+        text = new TextDecoder().decode(bytes)
+      }
       setContents(prev => ({ ...prev, [key]: text }))
       return text
     } catch {
@@ -99,7 +138,9 @@ export default function App() {
   const handleSave = useCallback(async () => {
     if (!activeProj || !activeFile) return
     try {
-      await api.putFile(activeProj, activeFile, editorValue)
+      const pp = await requirePassphrase()
+      const ciphertext = await encryptWithPassphrase(editorValue, pp)
+      await api.putFile(activeProj, activeFile, ciphertext)
       setContents(prev => ({ ...prev, [`${activeProj}/${activeFile}`]: editorValue }))
       await loadFiles(activeProj)
       setDirty(false)
@@ -107,7 +148,7 @@ export default function App() {
     } catch (e) {
       notify(`Save failed: ${e}`, true)
     }
-  }, [activeProj, activeFile, editorValue])
+  }, [activeProj, activeFile, editorValue, passphrase])
 
   async function handleDeleteFile(project: string, file: string) {
     try {
@@ -141,7 +182,9 @@ export default function App() {
   async function handleNewFile(name: string) {
     if (!activeProj) return
     try {
-      await api.putFile(activeProj, name, '')
+      const pp = await requirePassphrase()
+      const ciphertext = await encryptWithPassphrase('', pp)
+      await api.putFile(activeProj, name, ciphertext)
       await loadFiles(activeProj)
       await selectFile(name)
     } catch (e) {
@@ -173,6 +216,7 @@ export default function App() {
   }
 
   const showKeyModal = !apiKey || keyModalMsg !== ''
+  const showPassphraseModal = passphraseModalMsg !== ''
 
   return (
     <>
@@ -214,6 +258,10 @@ export default function App() {
 
       {showKeyModal && (
         <ApiKeyModal message={keyModalMsg} onSubmit={handleKeySubmit} />
+      )}
+
+      {showPassphraseModal && (
+        <PassphraseModal message={passphraseModalMsg} onSubmit={handlePassphraseSubmit} />
       )}
 
       {showFileModal && (

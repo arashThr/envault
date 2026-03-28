@@ -9,11 +9,18 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"text/tabwriter"
 	"time"
+
+	"filippo.io/age"
+	"golang.org/x/term"
 )
 
 const defaultFile = ".env"
+
+// ageHeader is the prefix of every age binary-format ciphertext.
+var ageHeader = []byte("age-encryption.org/v1\n")
 
 func main() {
 	if len(os.Args) < 2 {
@@ -81,38 +88,31 @@ func runNew(args []string) {
 }
 
 // push <project> [file]
-// Reads the local secret and uploads it to the server.
+// Reads the local secret, encrypts it, and uploads the ciphertext to the server.
 func runPush(args []string) {
 	project, file := parseProjectFile(args)
 	cfg := mustConfig()
 
 	localPath := localSecretPath(project, file)
-	content, err := os.ReadFile(localPath)
+	plaintext, err := os.ReadFile(localPath)
 	if err != nil {
 		fatalf("read local file: %v\n", err)
 	}
 
-	url := fmt.Sprintf("%s/api/projects/%s/files/%s", cfg.Server, project, file)
-	req, _ := http.NewRequest(http.MethodPut, url, bytes.NewReader(content))
-	req.Header.Set("X-API-Key", cfg.APIKey)
-	req.Header.Set("Content-Type", "text/plain")
-
-	resp, err := http.DefaultClient.Do(req)
+	passphrase := mustPassphrase()
+	content, err := encryptContent(plaintext, passphrase)
 	if err != nil {
+		fatalf("encrypt: %v\n", err)
+	}
+
+	if err := apiPutFile(cfg, project, file, content); err != nil {
 		fatalf("push: %v\n", err)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		fatalf("server error %d: %s\n", resp.StatusCode, body)
-	}
-
-	fmt.Printf("Pushed %s/%s to %s\n", project, file, cfg.Server)
+	fmt.Printf("Pushed %s/%s to %s (encrypted)\n", project, file, cfg.Server)
 }
 
 // pull <project> [file]
-// Downloads from server, saves to local cache, and symlinks into cwd.
+// Downloads ciphertext from server, decrypts it, saves plaintext locally, and symlinks into cwd.
 func runPull(args []string) {
 	project, file := parseProjectFile(args)
 	cfg := mustConfig()
@@ -135,9 +135,18 @@ func runPull(args []string) {
 		fatalf("server error %d: %s\n", resp.StatusCode, body)
 	}
 
-	content, err := io.ReadAll(resp.Body)
+	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		fatalf("read response: %v\n", err)
+	}
+
+	content := data
+	if isAgeEncrypted(data) {
+		passphrase := mustPassphrase()
+		content, err = decryptContent(data, passphrase)
+		if err != nil {
+			fatalf("decrypt: %v\n", err)
+		}
 	}
 
 	localPath := localSecretPath(project, file)
@@ -187,7 +196,6 @@ func runList(args []string) {
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 
 	if len(args) == 0 {
-		// List all projects
 		projects, err := apiGetProjects(cfg)
 		if err != nil {
 			fatalf("%v\n", err)
@@ -204,7 +212,6 @@ func runList(args []string) {
 		return
 	}
 
-	// List files in a project
 	project := args[0]
 	files, err := apiGetFiles(cfg, project)
 	if err != nil {
@@ -222,7 +229,7 @@ func runList(args []string) {
 }
 
 // sync
-// Pushes all locally cached secrets to the server.
+// Encrypts and pushes all locally cached secrets to the server.
 func runSync(args []string) {
 	cfg := mustConfig()
 	secretsDir := localSecretsDir()
@@ -235,6 +242,8 @@ func runSync(args []string) {
 	if err != nil {
 		fatalf("read secrets dir: %v\n", err)
 	}
+
+	passphrase := mustPassphrase()
 
 	pushed := 0
 	for _, pd := range projects {
@@ -252,26 +261,22 @@ func runSync(args []string) {
 			}
 			file := fd.Name()
 			localPath := filepath.Join(secretsDir, project, file)
-			content, err := os.ReadFile(localPath)
+			plaintext, err := os.ReadFile(localPath)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "  skip %s/%s: %v\n", project, file, err)
 				continue
 			}
-			url := fmt.Sprintf("%s/api/projects/%s/files/%s", cfg.Server, project, file)
-			req, _ := http.NewRequest(http.MethodPut, url, bytes.NewReader(content))
-			req.Header.Set("X-API-Key", cfg.APIKey)
-			resp, err := http.DefaultClient.Do(req)
+			content, err := encryptContent(plaintext, passphrase)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "  skip %s/%s: %v\n", project, file, err)
+				fmt.Fprintf(os.Stderr, "  skip %s/%s: encrypt: %v\n", project, file, err)
 				continue
 			}
-			resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				fmt.Printf("  pushed %s/%s\n", project, file)
-				pushed++
-			} else {
-				fmt.Fprintf(os.Stderr, "  failed %s/%s: HTTP %d\n", project, file, resp.StatusCode)
+			if err := apiPutFile(cfg, project, file, content); err != nil {
+				fmt.Fprintf(os.Stderr, "  failed %s/%s: %v\n", project, file, err)
+				continue
 			}
+			fmt.Printf("  pushed %s/%s\n", project, file)
+			pushed++
 		}
 	}
 	fmt.Printf("Synced %d file(s) to %s\n", pushed, cfg.Server)
@@ -310,6 +315,63 @@ func runConfig(args []string) {
 	}
 
 	fatalf("usage: envault config [show | set server <url> | set key <apikey>]\n")
+}
+
+// ── crypto ────────────────────────────────────────────────────────────────────
+
+// mustPassphrase returns the encryption passphrase from ENVAULT_PASSPHRASE or
+// prompts the user interactively (input is hidden).
+func mustPassphrase() string {
+	if pp := os.Getenv("ENVAULT_PASSPHRASE"); pp != "" {
+		return pp
+	}
+	fmt.Fprint(os.Stderr, "Encryption passphrase: ")
+	raw, err := term.ReadPassword(int(syscall.Stdin))
+	fmt.Fprintln(os.Stderr) // newline after hidden input
+	if err != nil {
+		fatalf("read passphrase: %v\n", err)
+	}
+	pp := strings.TrimSpace(string(raw))
+	if pp == "" {
+		fatalf("passphrase cannot be empty\n")
+	}
+	return pp
+}
+
+func encryptContent(plaintext []byte, passphrase string) ([]byte, error) {
+	recipient, err := age.NewScryptRecipient(passphrase)
+	if err != nil {
+		return nil, err
+	}
+	var buf bytes.Buffer
+	w, err := age.Encrypt(&buf, recipient)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := w.Write(plaintext); err != nil {
+		return nil, err
+	}
+	if err := w.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func decryptContent(ciphertext []byte, passphrase string) ([]byte, error) {
+	identity, err := age.NewScryptIdentity(passphrase)
+	if err != nil {
+		return nil, err
+	}
+	r, err := age.Decrypt(bytes.NewReader(ciphertext), identity)
+	if err != nil {
+		return nil, err
+	}
+	return io.ReadAll(r)
+}
+
+// isAgeEncrypted returns true if data begins with the age binary-format header.
+func isAgeEncrypted(data []byte) bool {
+	return bytes.HasPrefix(data, ageHeader)
 }
 
 // ── API helpers ───────────────────────────────────────────────────────────────
@@ -362,6 +424,23 @@ func apiGetFiles(cfg config, project string) ([]fileEntry, error) {
 		return nil, err
 	}
 	return out.Files, nil
+}
+
+func apiPutFile(cfg config, project, file string, content []byte) error {
+	url := fmt.Sprintf("%s/api/projects/%s/files/%s", cfg.Server, project, file)
+	req, _ := http.NewRequest(http.MethodPut, url, bytes.NewReader(content))
+	req.Header.Set("X-API-Key", cfg.APIKey)
+	req.Header.Set("Content-Type", "application/octet-stream")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("server error %d: %s", resp.StatusCode, body)
+	}
+	return nil
 }
 
 // ── config ────────────────────────────────────────────────────────────────────
@@ -461,11 +540,11 @@ USAGE:
 
 COMMANDS:
   new  <project> [file]   Create a new env file locally and symlink it into cwd
-  push <project> [file]   Upload local env file to the server
-  pull <project> [file]   Download env file from server; symlink into cwd
+  push <project> [file]   Encrypt and upload local env file to the server
+  pull <project> [file]   Download and decrypt env file from server; symlink into cwd
   link <project> [file]   Symlink a cached env file into cwd
   list [project]          List projects (or files within a project)
-  sync                    Push all locally cached env files to the server
+  sync                    Encrypt and push all locally cached env files to the server
 
   config show             Show current configuration
   config set server <url> Set the server URL
@@ -474,6 +553,9 @@ COMMANDS:
 DEFAULTS:
   file defaults to ".env" when not specified
 
+ENVIRONMENT:
+  ENVAULT_PASSPHRASE      Encryption passphrase (avoids interactive prompt)
+
 EXAMPLES:
   envault config set server http://localhost:8080
   envault config set key mysecretkey
@@ -481,9 +563,9 @@ EXAMPLES:
   cd ~/projects/cool-project
   envault new cool-project          # creates .env + symlink
   # edit .env …
-  envault push cool-project         # upload to server
+  envault push cool-project         # encrypt + upload to server
 
   cd ~/projects/cool-project-clone
-  envault pull cool-project         # download + symlink .env
+  envault pull cool-project         # download + decrypt + symlink .env
 `)
 }
