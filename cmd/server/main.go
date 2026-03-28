@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"embed"
 	"flag"
 	"fmt"
@@ -22,25 +23,32 @@ import (
 var webFiles embed.FS
 
 // Config holds all startup configuration parsed from flags and env vars.
+// APIKeyHash is the SHA-256 of the plaintext password; the plaintext is
+// discarded immediately after hashing so it is never held in memory.
 type Config struct {
-	Port    string
-	DataDir string
-	APIKey  string
-	Debug   bool
+	Port       string
+	DataDir    string
+	APIKeyHash [32]byte
+	Debug      bool
 }
 
-func newConfig() Config {
+func newConfig() (Config, error) {
 	port    := flag.String("port",  envOr("PORT", "8080"),         "listen port")
 	dataDir := flag.String("data",  envOr("DATA_DIR", "./data"),   "directory to store env files")
-	apiKey  := flag.String("key",   envOr("API_KEY", ""),          "API key for authentication")
+	apiKey  := flag.String("key",   envOr("API_KEY", ""),          "password for authentication")
 	debug   := flag.Bool("debug",   envOr("DEBUG", "") == "true",  "enable debug logging")
 	flag.Parse()
-	return Config{
-		Port:    *port,
-		DataDir: *dataDir,
-		APIKey:  *apiKey,
-		Debug:   *debug,
+
+	if *apiKey == "" {
+		return Config{}, fmt.Errorf("password is required — set via -key flag or API_KEY environment variable")
 	}
+
+	return Config{
+		Port:       *port,
+		DataDir:    *dataDir,
+		APIKeyHash: sha256.Sum256([]byte(*apiKey)),
+		Debug:      *debug,
+	}, nil
 }
 
 func newLogger(cfg Config) *slog.Logger {
@@ -59,12 +67,6 @@ func newLogger(cfg Config) *slog.Logger {
 }
 
 func newStore(cfg Config, logger *slog.Logger) (*store.Store, error) {
-	if cfg.APIKey == "" {
-		logger.Error("API_KEY is required — set via -key flag or API_KEY environment variable")
-		return nil, fmt.Errorf("API_KEY is required")
-	}
-	logger.Debug("configuration loaded", "key_len", len(cfg.APIKey))
-
 	s, err := store.New(cfg.DataDir, logger)
 	if err != nil {
 		logger.Error("failed to open store", "dir", cfg.DataDir, "err", err)
@@ -86,7 +88,7 @@ func newWebRoot(logger *slog.Logger) (fs.FS, error) {
 
 func newMux(s *store.Store, webRoot fs.FS, cfg Config, logger *slog.Logger) *http.ServeMux {
 	mux := http.NewServeMux()
-	mux.Handle("/api/", api.New(s, cfg.APIKey, logger))
+	mux.Handle("/api/", api.New(s, cfg.APIKeyHash, logger))
 	mux.Handle("/", http.FileServer(http.FS(webRoot)))
 	return mux
 }

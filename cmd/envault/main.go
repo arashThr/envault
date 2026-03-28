@@ -9,12 +9,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"text/tabwriter"
 	"time"
 
 	"filippo.io/age"
-	"golang.org/x/term"
 )
 
 const defaultFile = ".env"
@@ -99,8 +97,7 @@ func runPush(args []string) {
 		fatalf("read local file: %v\n", err)
 	}
 
-	passphrase := mustPassphrase()
-	content, err := encryptContent(plaintext, passphrase)
+	content, err := encryptContent(plaintext, cfg.APIKey)
 	if err != nil {
 		fatalf("encrypt: %v\n", err)
 	}
@@ -142,8 +139,7 @@ func runPull(args []string) {
 
 	content := data
 	if isAgeEncrypted(data) {
-		passphrase := mustPassphrase()
-		content, err = decryptContent(data, passphrase)
+		content, err = decryptContent(data, cfg.APIKey)
 		if err != nil {
 			fatalf("decrypt: %v\n", err)
 		}
@@ -243,8 +239,6 @@ func runSync(args []string) {
 		fatalf("read secrets dir: %v\n", err)
 	}
 
-	passphrase := mustPassphrase()
-
 	pushed := 0
 	for _, pd := range projects {
 		if !pd.IsDir() {
@@ -266,7 +260,7 @@ func runSync(args []string) {
 				fmt.Fprintf(os.Stderr, "  skip %s/%s: %v\n", project, file, err)
 				continue
 			}
-			content, err := encryptContent(plaintext, passphrase)
+			content, err := encryptContent(plaintext, cfg.APIKey)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "  skip %s/%s: encrypt: %v\n", project, file, err)
 				continue
@@ -318,25 +312,6 @@ func runConfig(args []string) {
 }
 
 // ── crypto ────────────────────────────────────────────────────────────────────
-
-// mustPassphrase returns the encryption passphrase from ENVAULT_PASSPHRASE or
-// prompts the user interactively (input is hidden).
-func mustPassphrase() string {
-	if pp := os.Getenv("ENVAULT_PASSPHRASE"); pp != "" {
-		return pp
-	}
-	fmt.Fprint(os.Stderr, "Encryption passphrase: ")
-	raw, err := term.ReadPassword(int(syscall.Stdin))
-	fmt.Fprintln(os.Stderr) // newline after hidden input
-	if err != nil {
-		fatalf("read passphrase: %v\n", err)
-	}
-	pp := strings.TrimSpace(string(raw))
-	if pp == "" {
-		fatalf("passphrase cannot be empty\n")
-	}
-	return pp
-}
 
 func encryptContent(plaintext []byte, passphrase string) ([]byte, error) {
 	recipient, err := age.NewScryptRecipient(passphrase)
@@ -552,9 +527,6 @@ COMMANDS:
 
 DEFAULTS:
   file defaults to ".env" when not specified
-
-ENVIRONMENT:
-  ENVAULT_PASSPHRASE      Encryption passphrase (avoids interactive prompt)
 
 EXAMPLES:
   envault config set server http://localhost:8080

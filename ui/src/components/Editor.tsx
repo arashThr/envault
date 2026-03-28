@@ -3,19 +3,26 @@ import { useEffect, useRef } from 'react'
 interface Props {
   content: string
   active: boolean
+  busy: boolean
   onChange: (value: string) => void
 }
 
-export default function Editor({ content, active, onChange }: Props) {
+export default function Editor({ content, active, busy, onChange }: Props) {
   const ref = useRef<HTMLTextAreaElement>(null)
 
   useEffect(() => {
-    if (active && ref.current) ref.current.focus()
-  }, [active])
+    if (active && !busy && ref.current) ref.current.focus()
+  }, [active, busy])
 
   if (!active) {
+    return <div className="empty">Select a file to edit</div>
+  }
+
+  if (busy) {
     return (
-      <div className="empty">Select a file to edit</div>
+      <div className="empty">
+        <span className="spinner" />
+      </div>
     )
   }
 
