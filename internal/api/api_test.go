@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -24,7 +25,7 @@ func setup(t *testing.T) (http.Handler, *store.Store) {
 	if err != nil {
 		t.Fatalf("store.New: %v", err)
 	}
-	return api.New(s, testKey, logger), s
+	return api.New(s, sha256.Sum256([]byte(testKey)), logger), s
 }
 
 // do sends a request to the handler and returns the response.

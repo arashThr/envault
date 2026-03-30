@@ -16,7 +16,6 @@ async function request(path: string, options: RequestInit = {}): Promise<Respons
     ...options,
     headers: {
       'X-API-Key': apiKey,
-      'Content-Type': 'text/plain',
       ...options.headers,
     },
   })
@@ -60,16 +59,19 @@ export async function listFiles(project: string): Promise<FileInfo[]> {
   return data.files ?? []
 }
 
-export async function getFile(project: string, file: string): Promise<string> {
+/** Returns the raw bytes of a file (may be age-encrypted). */
+export async function getFile(project: string, file: string): Promise<Uint8Array> {
   const res = await request(`/projects/${enc(project)}/files/${enc(file)}`)
   if (!res.ok) throw new Error(await extractError(res))
-  return res.text()
+  return new Uint8Array(await res.arrayBuffer())
 }
 
-export async function putFile(project: string, file: string, content: string): Promise<void> {
+/** Uploads raw bytes (age-encrypted ciphertext) for a file. */
+export async function putFile(project: string, file: string, content: Uint8Array): Promise<void> {
   const res = await request(`/projects/${enc(project)}/files/${enc(file)}`, {
     method: 'PUT',
-    body: content,
+    headers: { 'Content-Type': 'application/octet-stream' },
+    body: content.buffer as ArrayBuffer,
   })
   if (!res.ok) throw new Error(await extractError(res))
 }

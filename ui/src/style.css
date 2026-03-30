@@ -244,6 +244,21 @@ header h1 span { color: var(--text); }
 .modal-row { display: flex; gap: 8px; justify-content: flex-end; }
 .btn-ghost { padding: 5px 14px; border-radius: 5px; border: 1px solid var(--border); background: transparent; color: var(--text); cursor: pointer; font-size: 12px; }
 
+/* ── spinner ── */
+.spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin .65s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── modal error message ── */
+.modal p.error-msg { color: var(--red); }
+
 ::-webkit-scrollbar { width: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }

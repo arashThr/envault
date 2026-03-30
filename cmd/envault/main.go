@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,9 +12,14 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+
+	"filippo.io/age"
 )
 
 const defaultFile = ".env"
+
+// ageHeader is the prefix of every age binary-format ciphertext.
+var ageHeader = []byte("age-encryption.org/v1\n")
 
 func main() {
 	if len(os.Args) < 2 {
@@ -48,21 +54,34 @@ func main() {
 
 // ── commands ─────────────────────────────────────────────────────────────────
 
-// new <project> [file]
-// Creates an empty env file in the local secrets cache and symlinks it into cwd.
+// new [project] [file]
+// Creates an env file in the local secrets cache and symlinks it into cwd.
+// If a real file already exists in cwd it is moved to the vault automatically.
 func runNew(args []string) {
 	project, file := parseProjectFile(args)
 	localPath := localSecretPath(project, file)
 
 	if _, err := os.Stat(localPath); err == nil {
-		fatalf("secret already exists locally: %s\n", localPath)
+		fatalf("secret already exists in vault: %s\n", localPath)
 	}
 
-	linkPath := filepath.Join(mustCwd(), file)
-	if _, err := os.Lstat(linkPath); err == nil {
-		fatalf("file already exists in current directory: %s\n", linkPath)
+	cwd := mustCwd()
+	linkPath := filepath.Join(cwd, file)
+
+	info, err := os.Lstat(linkPath)
+	if err == nil {
+		// Something already exists at linkPath.
+		if info.Mode()&os.ModeSymlink != 0 {
+			fatalf("%s is already a symlink — run `envault push` to upload it\n", file)
+		}
+		// Real file: confirm, then adopt into the vault.
+		confirmAdopt(file, project, localPath)
+		moveToVault(linkPath, localPath, project, file)
+		fmt.Println("Run `envault push` to upload it to the server.")
+		return
 	}
 
+	// No existing file — create a new empty one.
 	if err := os.MkdirAll(filepath.Dir(localPath), 0700); err != nil {
 		fatalf("mkdir: %v\n", err)
 	}
@@ -80,39 +99,47 @@ func runNew(args []string) {
 	fmt.Println("Edit the file, then run `envault push` to upload it to the server.")
 }
 
-// push <project> [file]
-// Reads the local secret and uploads it to the server.
+// push [project] [file]
+// Encrypts the local secret and uploads the ciphertext to the server.
+// If a real file exists in cwd but not in the vault, the user is asked to
+// confirm before it is adopted. Auth is verified before any files are moved.
 func runPush(args []string) {
 	project, file := parseProjectFile(args)
 	cfg := mustConfig()
 
 	localPath := localSecretPath(project, file)
-	content, err := os.ReadFile(localPath)
+
+	// If the vault file is missing but a real file sits in cwd, adopt it —
+	// but only after verifying credentials and getting user confirmation.
+	if _, err := os.Stat(localPath); os.IsNotExist(err) {
+		linkPath := filepath.Join(mustCwd(), file)
+		if info, err := os.Lstat(linkPath); err == nil && info.Mode()&os.ModeSymlink == 0 {
+			if err := checkAuth(cfg); err != nil {
+				fatalf("authentication failed: %v\n", err)
+			}
+			confirmAdopt(file, project, localPath)
+			moveToVault(linkPath, localPath, project, file)
+		}
+	}
+
+	plaintext, err := os.ReadFile(localPath)
 	if err != nil {
 		fatalf("read local file: %v\n", err)
 	}
 
-	url := fmt.Sprintf("%s/api/projects/%s/files/%s", cfg.Server, project, file)
-	req, _ := http.NewRequest(http.MethodPut, url, bytes.NewReader(content))
-	req.Header.Set("X-API-Key", cfg.APIKey)
-	req.Header.Set("Content-Type", "text/plain")
-
-	resp, err := http.DefaultClient.Do(req)
+	content, err := encryptContent(plaintext, cfg.APIKey)
 	if err != nil {
+		fatalf("encrypt: %v\n", err)
+	}
+
+	if err := apiPutFile(cfg, project, file, content); err != nil {
 		fatalf("push: %v\n", err)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		fatalf("server error %d: %s\n", resp.StatusCode, body)
-	}
-
-	fmt.Printf("Pushed %s/%s to %s\n", project, file, cfg.Server)
+	fmt.Printf("Pushed %s/%s to %s (encrypted)\n", project, file, cfg.Server)
 }
 
 // pull <project> [file]
-// Downloads from server, saves to local cache, and symlinks into cwd.
+// Downloads ciphertext from server, decrypts it, saves plaintext locally, and symlinks into cwd.
 func runPull(args []string) {
 	project, file := parseProjectFile(args)
 	cfg := mustConfig()
@@ -135,9 +162,17 @@ func runPull(args []string) {
 		fatalf("server error %d: %s\n", resp.StatusCode, body)
 	}
 
-	content, err := io.ReadAll(resp.Body)
+	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		fatalf("read response: %v\n", err)
+	}
+
+	content := data
+	if isAgeEncrypted(data) {
+		content, err = decryptContent(data, cfg.APIKey)
+		if err != nil {
+			fatalf("decrypt: %v\n", err)
+		}
 	}
 
 	localPath := localSecretPath(project, file)
@@ -187,7 +222,6 @@ func runList(args []string) {
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 
 	if len(args) == 0 {
-		// List all projects
 		projects, err := apiGetProjects(cfg)
 		if err != nil {
 			fatalf("%v\n", err)
@@ -204,7 +238,6 @@ func runList(args []string) {
 		return
 	}
 
-	// List files in a project
 	project := args[0]
 	files, err := apiGetFiles(cfg, project)
 	if err != nil {
@@ -222,7 +255,7 @@ func runList(args []string) {
 }
 
 // sync
-// Pushes all locally cached secrets to the server.
+// Encrypts and pushes all locally cached secrets to the server.
 func runSync(args []string) {
 	cfg := mustConfig()
 	secretsDir := localSecretsDir()
@@ -252,26 +285,22 @@ func runSync(args []string) {
 			}
 			file := fd.Name()
 			localPath := filepath.Join(secretsDir, project, file)
-			content, err := os.ReadFile(localPath)
+			plaintext, err := os.ReadFile(localPath)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "  skip %s/%s: %v\n", project, file, err)
 				continue
 			}
-			url := fmt.Sprintf("%s/api/projects/%s/files/%s", cfg.Server, project, file)
-			req, _ := http.NewRequest(http.MethodPut, url, bytes.NewReader(content))
-			req.Header.Set("X-API-Key", cfg.APIKey)
-			resp, err := http.DefaultClient.Do(req)
+			content, err := encryptContent(plaintext, cfg.APIKey)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "  skip %s/%s: %v\n", project, file, err)
+				fmt.Fprintf(os.Stderr, "  skip %s/%s: encrypt: %v\n", project, file, err)
 				continue
 			}
-			resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				fmt.Printf("  pushed %s/%s\n", project, file)
-				pushed++
-			} else {
-				fmt.Fprintf(os.Stderr, "  failed %s/%s: HTTP %d\n", project, file, resp.StatusCode)
+			if err := apiPutFile(cfg, project, file, content); err != nil {
+				fmt.Fprintf(os.Stderr, "  failed %s/%s: %v\n", project, file, err)
+				continue
 			}
+			fmt.Printf("  pushed %s/%s\n", project, file)
+			pushed++
 		}
 	}
 	fmt.Printf("Synced %d file(s) to %s\n", pushed, cfg.Server)
@@ -310,6 +339,44 @@ func runConfig(args []string) {
 	}
 
 	fatalf("usage: envault config [show | set server <url> | set key <apikey>]\n")
+}
+
+// ── crypto ────────────────────────────────────────────────────────────────────
+
+func encryptContent(plaintext []byte, passphrase string) ([]byte, error) {
+	recipient, err := age.NewScryptRecipient(passphrase)
+	if err != nil {
+		return nil, err
+	}
+	var buf bytes.Buffer
+	w, err := age.Encrypt(&buf, recipient)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := w.Write(plaintext); err != nil {
+		return nil, err
+	}
+	if err := w.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func decryptContent(ciphertext []byte, passphrase string) ([]byte, error) {
+	identity, err := age.NewScryptIdentity(passphrase)
+	if err != nil {
+		return nil, err
+	}
+	r, err := age.Decrypt(bytes.NewReader(ciphertext), identity)
+	if err != nil {
+		return nil, err
+	}
+	return io.ReadAll(r)
+}
+
+// isAgeEncrypted returns true if data begins with the age binary-format header.
+func isAgeEncrypted(data []byte) bool {
+	return bytes.HasPrefix(data, ageHeader)
 }
 
 // ── API helpers ───────────────────────────────────────────────────────────────
@@ -362,6 +429,23 @@ func apiGetFiles(cfg config, project string) ([]fileEntry, error) {
 		return nil, err
 	}
 	return out.Files, nil
+}
+
+func apiPutFile(cfg config, project, file string, content []byte) error {
+	url := fmt.Sprintf("%s/api/projects/%s/files/%s", cfg.Server, project, file)
+	req, _ := http.NewRequest(http.MethodPut, url, bytes.NewReader(content))
+	req.Header.Set("X-API-Key", cfg.APIKey)
+	req.Header.Set("Content-Type", "application/octet-stream")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("server error %d: %s", resp.StatusCode, body)
+	}
+	return nil
 }
 
 // ── config ────────────────────────────────────────────────────────────────────
@@ -421,12 +505,69 @@ func mustConfig() config {
 
 // ── misc helpers ──────────────────────────────────────────────────────────────
 
+// checkAuth makes a lightweight request to verify the configured API key.
+func checkAuth(cfg config) error {
+	req, _ := http.NewRequest(http.MethodGet, cfg.Server+"/api/projects", nil)
+	req.Header.Set("X-API-Key", cfg.APIKey)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("could not reach server: %w", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized {
+		return fmt.Errorf("wrong API key")
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("server returned %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// confirmAdopt prompts the user to confirm moving a file into the vault.
+// It exits if the user declines.
+func confirmAdopt(file, project, vaultPath string) {
+	fmt.Printf("Found existing %s in the current directory.\n", file)
+	fmt.Printf("  It will be moved to the vault as project %q:\n", project)
+	fmt.Printf("  %s\n", vaultPath)
+	fmt.Printf("  A symlink will replace it in the current directory.\n")
+	fmt.Print("Proceed? [y/N] ")
+
+	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Scan()
+	answer := strings.TrimSpace(strings.ToLower(scanner.Text()))
+	if answer != "y" && answer != "yes" {
+		fmt.Println("Aborted.")
+		os.Exit(0)
+	}
+}
+
+// moveToVault moves a real file from srcPath into the vault at dstPath and
+// replaces it with a symlink. It prints what it's doing so the user is informed.
+func moveToVault(srcPath, dstPath, project, file string) {
+	fmt.Printf("Moving %s/%s to vault...\n", project, file)
+
+	if err := os.MkdirAll(filepath.Dir(dstPath), 0700); err != nil {
+		fatalf("mkdir vault: %v\n", err)
+	}
+	if err := os.Rename(srcPath, dstPath); err != nil {
+		fatalf("move to vault: %v\n", err)
+	}
+	if err := os.Chmod(dstPath, 0600); err != nil {
+		fatalf("chmod: %v\n", err)
+	}
+	if err := os.Symlink(dstPath, srcPath); err != nil {
+		fatalf("symlink: %v\n", err)
+	}
+}
+
 func parseProjectFile(args []string) (project, file string) {
+	file = defaultFile
 	if len(args) == 0 {
-		fatalf("usage: envault <command> <project> [file]\n")
+		// Default project name = current directory name
+		project = filepath.Base(mustCwd())
+		return
 	}
 	project = args[0]
-	file = defaultFile
 	if len(args) >= 2 {
 		file = args[1]
 	}
@@ -460,19 +601,20 @@ USAGE:
   envault <command> [arguments]
 
 COMMANDS:
-  new  <project> [file]   Create a new env file locally and symlink it into cwd
-  push <project> [file]   Upload local env file to the server
-  pull <project> [file]   Download env file from server; symlink into cwd
+  new  [project] [file]   Create a new env file locally and symlink it into cwd
+  push [project] [file]   Encrypt and upload local env file to the server
+  pull [project] [file]   Download and decrypt env file from server; symlink into cwd
   link <project> [file]   Symlink a cached env file into cwd
   list [project]          List projects (or files within a project)
-  sync                    Push all locally cached env files to the server
+  sync                    Encrypt and push all locally cached env files to the server
 
   config show             Show current configuration
   config set server <url> Set the server URL
   config set key <key>    Set the API key
 
 DEFAULTS:
-  file defaults to ".env" when not specified
+  project defaults to the current directory name when not specified
+  file    defaults to ".env" when not specified
 
 EXAMPLES:
   envault config set server http://localhost:8080
@@ -481,9 +623,9 @@ EXAMPLES:
   cd ~/projects/cool-project
   envault new cool-project          # creates .env + symlink
   # edit .env …
-  envault push cool-project         # upload to server
+  envault push cool-project         # encrypt + upload to server
 
   cd ~/projects/cool-project-clone
-  envault pull cool-project         # download + symlink .env
+  envault pull cool-project         # download + decrypt + symlink .env
 `)
 }

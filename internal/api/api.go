@@ -1,6 +1,8 @@
 package api
 
 import (
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -14,13 +16,15 @@ import (
 )
 
 // New builds a chi router with all API routes mounted under /api.
-func New(s *store.Store, apiKey string, logger *slog.Logger) http.Handler {
+// apiKeyHash is the SHA-256 hash of the expected password; the plaintext is
+// never held in memory after the caller computes the hash at startup.
+func New(s *store.Store, apiKeyHash [32]byte, logger *slog.Logger) http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Recoverer)
 	r.Use(requestLogger(logger))
-	r.Use(authMiddleware(apiKey, logger))
+	r.Use(authMiddleware(apiKeyHash, logger))
 
 	r.Route("/api", func(r chi.Router) {
 		r.Get("/projects", listProjects(s, logger))
@@ -37,7 +41,7 @@ func New(s *store.Store, apiKey string, logger *slog.Logger) http.Handler {
 
 // ── middleware ────────────────────────────────────────────────────────────────
 
-func authMiddleware(apiKey string, logger *slog.Logger) func(http.Handler) http.Handler {
+func authMiddleware(apiKeyHash [32]byte, logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			key := r.Header.Get("X-API-Key")
@@ -46,7 +50,8 @@ func authMiddleware(apiKey string, logger *slog.Logger) func(http.Handler) http.
 					key = auth[7:]
 				}
 			}
-			if key != apiKey {
+			provided := sha256.Sum256([]byte(key))
+			if subtle.ConstantTimeCompare(provided[:], apiKeyHash[:]) != 1 {
 				logger.Warn("authentication failed",
 					"remote_addr", r.RemoteAddr,
 					"method", r.Method,
