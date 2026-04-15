@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -41,6 +42,8 @@ func main() {
 		runLink(args)
 	case "list", "ls":
 		runList(args)
+	case "remove", "rm":
+		runRemove(args)
 	case "sync":
 		runSync(args)
 	case "help", "-h", "--help":
@@ -210,43 +213,200 @@ func runLink(args []string) {
 	fmt.Printf("Linked %s → %s\n", linkPath, localPath)
 }
 
+// remove [project] [env]
+// Deletes a locally cached secret file (or an entire project directory).
+// Does not touch the server; use the web UI to delete from the server.
+func runRemove(args []string) {
+	var project, env string
+	switch len(args) {
+	case 0:
+		project = promptLine("Project", filepath.Base(mustCwd()))
+	case 1:
+		project = args[0]
+	default:
+		project, env = args[0], args[1]
+	}
+
+	if env != "" {
+		path := localSecretPath(project, env)
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			fatalf("no local secret found for %s/%s\n", project, env)
+		}
+		if err := os.Remove(path); err != nil {
+			fatalf("remove: %v\n", err)
+		}
+		fmt.Printf("Removed local %s/%s\n", project, env)
+		fmt.Println("Note: any symlink pointing to this file is now dangling.")
+		return
+	}
+
+	dir := filepath.Join(localSecretsDir(), project)
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		fatalf("no local project %q found\n", project)
+	}
+	fmt.Printf("Delete all local secrets for project %q? [y/N] ", project)
+	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Scan()
+	if answer := strings.TrimSpace(strings.ToLower(scanner.Text())); answer != "y" && answer != "yes" {
+		fmt.Println("Aborted.")
+		return
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		fatalf("remove: %v\n", err)
+	}
+	fmt.Printf("Removed local project %s\n", project)
+	fmt.Println("Note: any symlinks pointing to these files are now dangling.")
+}
+
 // list [project]
 // Lists all projects, or all environments within a project.
+// Merges local (~/.envault/secrets) and server results, showing status for each.
 func runList(args []string) {
-	cfg := mustConfig()
+	cfg, _ := loadConfig() // best-effort; server fetch may fail gracefully
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 
 	if len(args) == 0 {
-		projects, err := apiGetProjects(cfg)
-		if err != nil {
-			fatalf("%v\n", err)
+		// Fetch from server (optional — no server configured or unreachable is ok)
+		serverProjects := []string{}
+		serverWarn := ""
+		if cfg.Server != "" {
+			var err error
+			serverProjects, err = apiGetProjects(cfg)
+			if err != nil {
+				serverWarn = fmt.Sprintf("(server unreachable: %v)", err)
+			}
 		}
-		if len(projects) == 0 {
+
+		serverSet := make(map[string]bool)
+		for _, p := range serverProjects {
+			serverSet[p] = true
+		}
+		localSet := make(map[string]bool)
+		for _, p := range localProjectNames() {
+			localSet[p] = true
+		}
+
+		all := mergedKeys(serverSet, localSet)
+		if len(all) == 0 {
 			fmt.Println("No projects yet.")
 			return
 		}
-		fmt.Fprintln(tw, "PROJECT")
-		for _, p := range projects {
-			fmt.Fprintln(tw, p)
+
+		fmt.Fprintln(tw, "PROJECT\tSTATUS")
+		for _, p := range all {
+			var status string
+			switch {
+			case serverSet[p] && localSet[p]:
+				status = "synced"
+			case localSet[p]:
+				status = "local-only"
+			default:
+				status = "server-only"
+			}
+			fmt.Fprintf(tw, "%s\t%s\n", p, status)
 		}
 		tw.Flush()
+		if serverWarn != "" {
+			fmt.Fprintln(os.Stderr, serverWarn)
+		}
 		return
 	}
 
 	project := args[0]
-	files, err := apiGetFiles(cfg, project)
-	if err != nil {
-		fatalf("%v\n", err)
+
+	serverFiles := []fileEntry{}
+	serverWarn := ""
+	if cfg.Server != "" {
+		var err error
+		serverFiles, err = apiGetFiles(cfg, project)
+		if err != nil && !strings.Contains(err.Error(), "not found") {
+			serverWarn = fmt.Sprintf("(server: %v)", err)
+		}
 	}
-	if len(files) == 0 {
+
+	serverSet := make(map[string]fileEntry)
+	for _, f := range serverFiles {
+		serverSet[f.Name] = f
+	}
+	localSet := make(map[string]bool)
+	for _, e := range localEnvNames(project) {
+		localSet[e] = true
+	}
+
+	boolServerSet := make(map[string]bool)
+	for k := range serverSet {
+		boolServerSet[k] = true
+	}
+	all := mergedKeys(boolServerSet, localSet)
+	if len(all) == 0 {
 		fmt.Printf("No environments in project %q.\n", project)
 		return
 	}
-	fmt.Fprintln(tw, "ENVIRONMENT\tSIZE\tMODIFIED")
-	for _, f := range files {
-		fmt.Fprintf(tw, "%s\t%d B\t%s\n", f.Name, f.Size, f.ModTime.Format(time.RFC3339))
+
+	fmt.Fprintln(tw, "ENVIRONMENT\tSIZE\tMODIFIED\tSTATUS")
+	for _, env := range all {
+		sf, onServer := serverSet[env]
+		onLocal := localSet[env]
+		var status string
+		switch {
+		case onServer && onLocal:
+			status = "synced"
+		case onLocal:
+			status = "local-only"
+		default:
+			status = "server-only"
+		}
+		if onServer {
+			fmt.Fprintf(tw, "%s\t%d B\t%s\t%s\n", env, sf.Size, sf.ModTime.Format(time.RFC3339), status)
+		} else {
+			fmt.Fprintf(tw, "%s\t—\t—\t%s\n", env, status)
+		}
 	}
 	tw.Flush()
+	if serverWarn != "" {
+		fmt.Fprintln(os.Stderr, serverWarn)
+	}
+}
+
+// localProjectNames returns the names of all locally cached projects.
+func localProjectNames() []string {
+	entries, _ := os.ReadDir(localSecretsDir())
+	var out []string
+	for _, e := range entries {
+		if e.IsDir() {
+			out = append(out, e.Name())
+		}
+	}
+	return out
+}
+
+// localEnvNames returns the names of all locally cached environments for a project.
+func localEnvNames(project string) []string {
+	entries, _ := os.ReadDir(filepath.Join(localSecretsDir(), project))
+	var out []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			out = append(out, e.Name())
+		}
+	}
+	return out
+}
+
+// mergedKeys returns a sorted union of keys from two bool maps.
+func mergedKeys(a, b map[string]bool) []string {
+	seen := make(map[string]bool, len(a)+len(b))
+	for k := range a {
+		seen[k] = true
+	}
+	for k := range b {
+		seen[k] = true
+	}
+	keys := make([]string, 0, len(seen))
+	for k := range seen {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // sync encrypts and pushes all locally cached secrets to the server.
@@ -632,16 +792,17 @@ USAGE:
   envault <command> [project] [environment]
 
 COMMANDS:
-  new  [project] [env]    Add an env file to the vault and symlink it into cwd
-  push [project] [env]    Encrypt and upload a local env file to the server
-  pull [project] [env]    Download and decrypt an env file; symlink into cwd
-  link [project] [env]    Symlink a cached env file into cwd (no download)
-  list [project]          List projects, or environments within a project
-  sync                    Encrypt and push all locally cached env files
+  new    [project] [env]   Add an env file to the vault and symlink it into cwd
+  push   [project] [env]   Encrypt and upload a local env file to the server
+  pull   [project] [env]   Download and decrypt an env file; symlink into cwd
+  link   [project] [env]   Symlink a cached env file into cwd (no download)
+  remove [project] [env]   Delete a locally cached env file (or entire project)
+  list   [project]         List projects (or environments), merged from local + server
+  sync                     Encrypt and push all locally cached env files
 
-  config show             Show current configuration
-  config set server <url> Set the server URL
-  config set key <key>    Set the API key (password)
+  config show              Show current configuration
+  config set server <url>  Set the server URL
+  config set key <key>     Set the API key / encryption passphrase
 
 DEFAULTS:
   project     defaults to the current directory name
@@ -653,6 +814,8 @@ EXAMPLES:
   envault new myapp production      # no prompts
   envault push myapp production     # encrypt + upload
   envault pull myapp production     # download + decrypt + symlink as .env.production
-  envault list myapp                # show environments stored for myapp
+  envault list myapp                # show environments for myapp (local + server)
+  envault remove myapp local        # delete local copy of myapp/local
+  envault remove myapp              # delete all local secrets for myapp
 `)
 }

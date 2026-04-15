@@ -18,13 +18,16 @@ import (
 // New builds a chi router with all API routes mounted under /api.
 // apiKeyHash is the SHA-256 hash of the expected password; the plaintext is
 // never held in memory after the caller computes the hash at startup.
-func New(s *store.Store, apiKeyHash [32]byte, logger *slog.Logger) http.Handler {
+// When noAuth is true the auth middleware is skipped entirely.
+func New(s *store.Store, apiKeyHash [32]byte, noAuth bool, logger *slog.Logger) http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Recoverer)
 	r.Use(requestLogger(logger))
-	r.Use(authMiddleware(apiKeyHash, logger))
+	if !noAuth {
+		r.Use(authMiddleware(apiKeyHash, logger))
+	}
 
 	r.Route("/api", func(r chi.Router) {
 		r.Get("/projects", listProjects(s, logger))

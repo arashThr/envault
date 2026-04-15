@@ -25,30 +25,33 @@ var webFiles embed.FS
 // Config holds all startup configuration parsed from flags and env vars.
 // APIKeyHash is the SHA-256 of the plaintext password; the plaintext is
 // discarded immediately after hashing so it is never held in memory.
+// When NoAuth is true the server runs without authentication.
 type Config struct {
 	Port       string
 	DataDir    string
 	APIKeyHash [32]byte
+	NoAuth     bool
 	Debug      bool
 }
 
 func newConfig() (Config, error) {
 	port    := flag.String("port",  envOr("PORT", "8080"),         "listen port")
 	dataDir := flag.String("data",  envOr("DATA_DIR", "./data"),   "directory to store env files")
-	apiKey  := flag.String("key",   envOr("API_KEY", ""),          "password for authentication")
+	apiKey  := flag.String("key",   envOr("API_KEY", ""),          "password for authentication (omit to disable auth)")
 	debug   := flag.Bool("debug",   envOr("DEBUG", "") == "true",  "enable debug logging")
 	flag.Parse()
 
-	if *apiKey == "" {
-		return Config{}, fmt.Errorf("password is required — set via -key flag or API_KEY environment variable")
+	cfg := Config{
+		Port:    *port,
+		DataDir: *dataDir,
+		Debug:   *debug,
 	}
-
-	return Config{
-		Port:       *port,
-		DataDir:    *dataDir,
-		APIKeyHash: sha256.Sum256([]byte(*apiKey)),
-		Debug:      *debug,
-	}, nil
+	if *apiKey != "" {
+		cfg.APIKeyHash = sha256.Sum256([]byte(*apiKey))
+	} else {
+		cfg.NoAuth = true
+	}
+	return cfg, nil
 }
 
 func newLogger(cfg Config) *slog.Logger {
@@ -62,7 +65,11 @@ func newLogger(cfg Config) *slog.Logger {
 		"port", cfg.Port,
 		"data_dir", cfg.DataDir,
 		"debug", cfg.Debug,
+		"auth", !cfg.NoAuth,
 	)
+	if cfg.NoAuth {
+		logger.Warn("running WITHOUT authentication — all API endpoints are public")
+	}
 	return logger
 }
 
@@ -88,7 +95,7 @@ func newWebRoot(logger *slog.Logger) (fs.FS, error) {
 
 func newMux(s *store.Store, webRoot fs.FS, cfg Config, logger *slog.Logger) *http.ServeMux {
 	mux := http.NewServeMux()
-	mux.Handle("/api/", api.New(s, cfg.APIKeyHash, logger))
+	mux.Handle("/api/", api.New(s, cfg.APIKeyHash, cfg.NoAuth, logger))
 	mux.Handle("/", http.FileServer(http.FS(webRoot)))
 	return mux
 }
