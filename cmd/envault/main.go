@@ -1,8 +1,8 @@
 package main
 
 import (
-	"bytes"
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,8 +15,6 @@ import (
 
 	"filippo.io/age"
 )
-
-const defaultFile = ".env"
 
 // ageHeader is the prefix of every age binary-format ciphertext.
 var ageHeader = []byte("age-encryption.org/v1\n")
@@ -54,29 +52,27 @@ func main() {
 
 // ── commands ─────────────────────────────────────────────────────────────────
 
-// new [project] [file]
-// Creates an env file in the local secrets cache and symlinks it into cwd.
-// If a real file already exists in cwd it is moved to the vault automatically.
+// new [project] [env]
+// Creates an env file in the local vault and symlinks it into cwd.
+// Prompts for project (default = cwd name) and environment when omitted.
+// If a matching file already exists in cwd it is adopted into the vault.
 func runNew(args []string) {
-	project, file := parseProjectFile(args)
-	localPath := localSecretPath(project, file)
+	project, env := parseProjectEnv(args)
+	localPath := localSecretPath(project, env)
+	linkPath := filepath.Join(mustCwd(), symlinkName(env))
 
 	if _, err := os.Stat(localPath); err == nil {
 		fatalf("secret already exists in vault: %s\n", localPath)
 	}
 
-	cwd := mustCwd()
-	linkPath := filepath.Join(cwd, file)
-
 	info, err := os.Lstat(linkPath)
 	if err == nil {
-		// Something already exists at linkPath.
 		if info.Mode()&os.ModeSymlink != 0 {
-			fatalf("%s is already a symlink — run `envault push` to upload it\n", file)
+			fatalf("%s is already a symlink — run `envault push` to upload it\n", symlinkName(env))
 		}
-		// Real file: confirm, then adopt into the vault.
-		confirmAdopt(file, project, localPath)
-		moveToVault(linkPath, localPath, project, file)
+		// Real file: confirm then adopt.
+		confirmAdopt(symlinkName(env), project, env, localPath)
+		moveToVault(linkPath, localPath, project, env)
 		fmt.Println("Run `envault push` to upload it to the server.")
 		return
 	}
@@ -92,33 +88,32 @@ func runNew(args []string) {
 		fatalf("symlink: %v\n", err)
 	}
 
-	fmt.Printf("Created %s/%s\n", project, file)
-	fmt.Printf("  local  : %s\n", localPath)
+	fmt.Printf("Created %s/%s\n", project, env)
+	fmt.Printf("  vault  : %s\n", localPath)
 	fmt.Printf("  symlink: %s\n", linkPath)
 	fmt.Println()
 	fmt.Println("Edit the file, then run `envault push` to upload it to the server.")
 }
 
-// push [project] [file]
-// Encrypts the local secret and uploads the ciphertext to the server.
-// If a real file exists in cwd but not in the vault, the user is asked to
-// confirm before it is adopted. Auth is verified before any files are moved.
+// push [project] [env]
+// Encrypts the local secret and uploads ciphertext to the server.
+// If a real file exists in cwd but not in the vault, auth is checked first,
+// then the user is asked to confirm before the file is adopted.
 func runPush(args []string) {
-	project, file := parseProjectFile(args)
+	project, env := parseProjectEnv(args)
 	cfg := mustConfig()
 
-	localPath := localSecretPath(project, file)
+	localPath := localSecretPath(project, env)
+	linkPath := filepath.Join(mustCwd(), symlinkName(env))
 
-	// If the vault file is missing but a real file sits in cwd, adopt it —
-	// but only after verifying credentials and getting user confirmation.
+	// Adopt a real file from cwd if the vault copy is missing.
 	if _, err := os.Stat(localPath); os.IsNotExist(err) {
-		linkPath := filepath.Join(mustCwd(), file)
 		if info, err := os.Lstat(linkPath); err == nil && info.Mode()&os.ModeSymlink == 0 {
 			if err := checkAuth(cfg); err != nil {
 				fatalf("authentication failed: %v\n", err)
 			}
-			confirmAdopt(file, project, localPath)
-			moveToVault(linkPath, localPath, project, file)
+			confirmAdopt(symlinkName(env), project, env, localPath)
+			moveToVault(linkPath, localPath, project, env)
 		}
 	}
 
@@ -132,19 +127,19 @@ func runPush(args []string) {
 		fatalf("encrypt: %v\n", err)
 	}
 
-	if err := apiPutFile(cfg, project, file, content); err != nil {
+	if err := apiPutFile(cfg, project, env, content); err != nil {
 		fatalf("push: %v\n", err)
 	}
-	fmt.Printf("Pushed %s/%s to %s (encrypted)\n", project, file, cfg.Server)
+	fmt.Printf("Pushed %s/%s to %s (encrypted)\n", project, env, cfg.Server)
 }
 
-// pull <project> [file]
-// Downloads ciphertext from server, decrypts it, saves plaintext locally, and symlinks into cwd.
+// pull [project] [env]
+// Downloads and decrypts a secret from the server, saves it locally, symlinks into cwd.
 func runPull(args []string) {
-	project, file := parseProjectFile(args)
+	project, env := parseProjectEnv(args)
 	cfg := mustConfig()
 
-	url := fmt.Sprintf("%s/api/projects/%s/files/%s", cfg.Server, project, file)
+	url := fmt.Sprintf("%s/api/projects/%s/files/%s", cfg.Server, project, env)
 	req, _ := http.NewRequest(http.MethodGet, url, nil)
 	req.Header.Set("X-API-Key", cfg.APIKey)
 
@@ -155,7 +150,7 @@ func runPull(args []string) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
-		fatalf("not found on server: %s/%s\n", project, file)
+		fatalf("not found on server: %s/%s\n", project, env)
 	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -175,7 +170,7 @@ func runPull(args []string) {
 		}
 	}
 
-	localPath := localSecretPath(project, file)
+	localPath := localSecretPath(project, env)
 	if err := os.MkdirAll(filepath.Dir(localPath), 0700); err != nil {
 		fatalf("mkdir: %v\n", err)
 	}
@@ -183,28 +178,28 @@ func runPull(args []string) {
 		fatalf("write local: %v\n", err)
 	}
 
-	linkPath := filepath.Join(mustCwd(), file)
+	linkPath := filepath.Join(mustCwd(), symlinkName(env))
 	if _, err := os.Lstat(linkPath); os.IsNotExist(err) {
 		if err := os.Symlink(localPath, linkPath); err != nil {
 			fatalf("symlink: %v\n", err)
 		}
-		fmt.Printf("Pulled %s/%s → %s (symlinked)\n", project, file, linkPath)
+		fmt.Printf("Pulled %s/%s → %s (symlinked)\n", project, env, linkPath)
 	} else {
-		fmt.Printf("Pulled %s/%s → %s (updated)\n", project, file, localPath)
+		fmt.Printf("Pulled %s/%s → %s (updated)\n", project, env, localPath)
 	}
 }
 
-// link <project> [file]
-// Creates a symlink in cwd pointing to the local cache (must already exist locally).
+// link [project] [env]
+// Creates a symlink in cwd pointing to a locally cached secret.
 func runLink(args []string) {
-	project, file := parseProjectFile(args)
-	localPath := localSecretPath(project, file)
+	project, env := parseProjectEnv(args)
+	localPath := localSecretPath(project, env)
 
 	if _, err := os.Stat(localPath); os.IsNotExist(err) {
-		fatalf("not cached locally — run `envault pull %s %s` first\n", project, file)
+		fatalf("not cached locally — run `envault pull %s %s` first\n", project, env)
 	}
 
-	linkPath := filepath.Join(mustCwd(), file)
+	linkPath := filepath.Join(mustCwd(), symlinkName(env))
 	if _, err := os.Lstat(linkPath); err == nil {
 		fatalf("file already exists: %s\n", linkPath)
 	}
@@ -216,7 +211,7 @@ func runLink(args []string) {
 }
 
 // list [project]
-// Lists all projects (or files within a project) from the server.
+// Lists all projects, or all environments within a project.
 func runList(args []string) {
 	cfg := mustConfig()
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
@@ -244,18 +239,17 @@ func runList(args []string) {
 		fatalf("%v\n", err)
 	}
 	if len(files) == 0 {
-		fmt.Printf("No files in project %q.\n", project)
+		fmt.Printf("No environments in project %q.\n", project)
 		return
 	}
-	fmt.Fprintln(tw, "FILE\tSIZE\tMODIFIED")
+	fmt.Fprintln(tw, "ENVIRONMENT\tSIZE\tMODIFIED")
 	for _, f := range files {
 		fmt.Fprintf(tw, "%s\t%d B\t%s\n", f.Name, f.Size, f.ModTime.Format(time.RFC3339))
 	}
 	tw.Flush()
 }
 
-// sync
-// Encrypts and pushes all locally cached secrets to the server.
+// sync encrypts and pushes all locally cached secrets to the server.
 func runSync(args []string) {
 	cfg := mustConfig()
 	secretsDir := localSecretsDir()
@@ -275,31 +269,31 @@ func runSync(args []string) {
 			continue
 		}
 		project := pd.Name()
-		files, err := os.ReadDir(filepath.Join(secretsDir, project))
+		envs, err := os.ReadDir(filepath.Join(secretsDir, project))
 		if err != nil {
 			continue
 		}
-		for _, fd := range files {
+		for _, fd := range envs {
 			if fd.IsDir() {
 				continue
 			}
-			file := fd.Name()
-			localPath := filepath.Join(secretsDir, project, file)
+			env := fd.Name()
+			localPath := filepath.Join(secretsDir, project, env)
 			plaintext, err := os.ReadFile(localPath)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "  skip %s/%s: %v\n", project, file, err)
+				fmt.Fprintf(os.Stderr, "  skip %s/%s: %v\n", project, env, err)
 				continue
 			}
 			content, err := encryptContent(plaintext, cfg.APIKey)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "  skip %s/%s: encrypt: %v\n", project, file, err)
+				fmt.Fprintf(os.Stderr, "  skip %s/%s: encrypt: %v\n", project, env, err)
 				continue
 			}
-			if err := apiPutFile(cfg, project, file, content); err != nil {
-				fmt.Fprintf(os.Stderr, "  failed %s/%s: %v\n", project, file, err)
+			if err := apiPutFile(cfg, project, env, content); err != nil {
+				fmt.Fprintf(os.Stderr, "  failed %s/%s: %v\n", project, env, err)
 				continue
 			}
-			fmt.Printf("  pushed %s/%s\n", project, file)
+			fmt.Printf("  pushed %s/%s\n", project, env)
 			pushed++
 		}
 	}
@@ -431,8 +425,8 @@ func apiGetFiles(cfg config, project string) ([]fileEntry, error) {
 	return out.Files, nil
 }
 
-func apiPutFile(cfg config, project, file string, content []byte) error {
-	url := fmt.Sprintf("%s/api/projects/%s/files/%s", cfg.Server, project, file)
+func apiPutFile(cfg config, project, env string, content []byte) error {
+	url := fmt.Sprintf("%s/api/projects/%s/files/%s", cfg.Server, project, env)
 	req, _ := http.NewRequest(http.MethodPut, url, bytes.NewReader(content))
 	req.Header.Set("X-API-Key", cfg.APIKey)
 	req.Header.Set("Content-Type", "application/octet-stream")
@@ -465,8 +459,8 @@ func localSecretsDir() string {
 	return filepath.Join(home, ".envault", "secrets")
 }
 
-func localSecretPath(project, file string) string {
-	return filepath.Join(localSecretsDir(), project, file)
+func localSecretPath(project, env string) string {
+	return filepath.Join(localSecretsDir(), project, env)
 }
 
 func loadConfig() (config, error) {
@@ -505,6 +499,59 @@ func mustConfig() config {
 
 // ── misc helpers ──────────────────────────────────────────────────────────────
 
+// symlinkName returns the filename used in the working directory for a given
+// environment: "local" maps to ".env"; all others map to ".env.<env>".
+func symlinkName(env string) string {
+	if env == "local" {
+		return ".env"
+	}
+	return ".env." + env
+}
+
+// parseProjectEnv resolves the project and environment from CLI args,
+// falling back to interactive prompts for any that are missing.
+func parseProjectEnv(args []string) (project, env string) {
+	cwd := mustCwd()
+	defaultProject := filepath.Base(cwd)
+
+	switch len(args) {
+	case 0:
+		project = promptLine("Project", defaultProject)
+		env = promptEnv()
+	case 1:
+		project = args[0]
+		env = promptEnv()
+	default:
+		project, env = args[0], args[1]
+	}
+	return
+}
+
+// promptLine prints a prompt with a default value and reads a line from stdin.
+// Returns the default if the user just presses Enter.
+func promptLine(label, def string) string {
+	fmt.Printf("%s [%s]: ", label, def)
+	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Scan()
+	v := strings.TrimSpace(scanner.Text())
+	if v == "" {
+		return def
+	}
+	return v
+}
+
+// promptEnv asks for the environment name with a default of "local".
+func promptEnv() string {
+	fmt.Print("Environment (e.g. local, production, staging) [local]: ")
+	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Scan()
+	v := strings.TrimSpace(scanner.Text())
+	if v == "" {
+		return "local"
+	}
+	return v
+}
+
 // checkAuth makes a lightweight request to verify the configured API key.
 func checkAuth(cfg config) error {
 	req, _ := http.NewRequest(http.MethodGet, cfg.Server+"/api/projects", nil)
@@ -523,29 +570,27 @@ func checkAuth(cfg config) error {
 	return nil
 }
 
-// confirmAdopt prompts the user to confirm moving a file into the vault.
-// It exits if the user declines.
-func confirmAdopt(file, project, vaultPath string) {
-	fmt.Printf("Found existing %s in the current directory.\n", file)
-	fmt.Printf("  It will be moved to the vault as project %q:\n", project)
-	fmt.Printf("  %s\n", vaultPath)
-	fmt.Printf("  A symlink will replace it in the current directory.\n")
+// confirmAdopt shows what will happen and requires explicit [y/N] confirmation.
+// Exits cleanly if the user declines.
+func confirmAdopt(filename, project, env, vaultPath string) {
+	fmt.Printf("Found existing %s in the current directory.\n", filename)
+	fmt.Printf("  Project    : %s\n", project)
+	fmt.Printf("  Environment: %s\n", env)
+	fmt.Printf("  Vault path : %s\n", vaultPath)
+	fmt.Printf("  The file will be moved to the vault and replaced with a symlink.\n")
 	fmt.Print("Proceed? [y/N] ")
 
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Scan()
-	answer := strings.TrimSpace(strings.ToLower(scanner.Text()))
-	if answer != "y" && answer != "yes" {
+	if answer := strings.TrimSpace(strings.ToLower(scanner.Text())); answer != "y" && answer != "yes" {
 		fmt.Println("Aborted.")
 		os.Exit(0)
 	}
 }
 
-// moveToVault moves a real file from srcPath into the vault at dstPath and
-// replaces it with a symlink. It prints what it's doing so the user is informed.
-func moveToVault(srcPath, dstPath, project, file string) {
-	fmt.Printf("Moving %s/%s to vault...\n", project, file)
-
+// moveToVault moves srcPath into the vault at dstPath and replaces it with a symlink.
+func moveToVault(srcPath, dstPath, project, env string) {
+	fmt.Printf("Moving to vault as %s/%s...\n", project, env)
 	if err := os.MkdirAll(filepath.Dir(dstPath), 0700); err != nil {
 		fatalf("mkdir vault: %v\n", err)
 	}
@@ -558,20 +603,6 @@ func moveToVault(srcPath, dstPath, project, file string) {
 	if err := os.Symlink(dstPath, srcPath); err != nil {
 		fatalf("symlink: %v\n", err)
 	}
-}
-
-func parseProjectFile(args []string) (project, file string) {
-	file = defaultFile
-	if len(args) == 0 {
-		// Default project name = current directory name
-		project = filepath.Base(mustCwd())
-		return
-	}
-	project = args[0]
-	if len(args) >= 2 {
-		file = args[1]
-	}
-	return
 }
 
 func mustCwd() string {
@@ -598,34 +629,30 @@ func printUsage() {
 	fmt.Print(`envault — secure .env file manager
 
 USAGE:
-  envault <command> [arguments]
+  envault <command> [project] [environment]
 
 COMMANDS:
-  new  [project] [file]   Create a new env file locally and symlink it into cwd
-  push [project] [file]   Encrypt and upload local env file to the server
-  pull [project] [file]   Download and decrypt env file from server; symlink into cwd
-  link <project> [file]   Symlink a cached env file into cwd
-  list [project]          List projects (or files within a project)
-  sync                    Encrypt and push all locally cached env files to the server
+  new  [project] [env]    Add an env file to the vault and symlink it into cwd
+  push [project] [env]    Encrypt and upload a local env file to the server
+  pull [project] [env]    Download and decrypt an env file; symlink into cwd
+  link [project] [env]    Symlink a cached env file into cwd (no download)
+  list [project]          List projects, or environments within a project
+  sync                    Encrypt and push all locally cached env files
 
   config show             Show current configuration
   config set server <url> Set the server URL
-  config set key <key>    Set the API key
+  config set key <key>    Set the API key (password)
 
 DEFAULTS:
-  project defaults to the current directory name when not specified
-  file    defaults to ".env" when not specified
+  project     defaults to the current directory name
+  environment defaults to "local" (symlinked as .env)
+              other environments are symlinked as .env.<environment>
 
 EXAMPLES:
-  envault config set server http://localhost:8080
-  envault config set key mysecretkey
-
-  cd ~/projects/cool-project
-  envault new cool-project          # creates .env + symlink
-  # edit .env …
-  envault push cool-project         # encrypt + upload to server
-
-  cd ~/projects/cool-project-clone
-  envault pull cool-project         # download + decrypt + symlink .env
+  envault new                       # prompts for project and environment
+  envault new myapp production      # no prompts
+  envault push myapp production     # encrypt + upload
+  envault pull myapp production     # download + decrypt + symlink as .env.production
+  envault list myapp                # show environments stored for myapp
 `)
 }

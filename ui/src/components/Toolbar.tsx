@@ -54,8 +54,8 @@ export default function Toolbar({
       ))}
       <button className="add-tab" onClick={onNewFile}>+ file</button>
       <div className="spacer" />
-      <button className="btn btn-primary" disabled={!activeFile} onClick={onSave}>
-        {dirty ? 'Save*' : 'Save'}
+      <button className={`btn ${dirty ? 'btn-dirty' : 'btn-primary'}`} disabled={!activeFile} onClick={onSave}>
+        Save{dirty ? ' *' : ''}
       </button>
       <button className="btn btn-danger" disabled={!activeFile} onClick={onDeleteActive}>
         Delete
