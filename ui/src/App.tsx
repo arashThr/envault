@@ -216,7 +216,7 @@ export default function App() {
   return (
     <>
       <header>
-        <h1>env<span>vault</span></h1>
+        <h1>env<span>ault</span></h1>
         <StatusBar status={status} />
       </header>
 
