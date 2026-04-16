@@ -378,16 +378,29 @@ func localProjectNames() []string {
 	return out
 }
 
-// localEnvNames returns the names of all locally cached environments for a project.
+// localEnvNames returns environment names for all locally cached files in a project.
+// Vault files are stored under their dotenv filename (.env, .env.production), so
+// this reverses that mapping back to the environment name (local, production, etc.).
 func localEnvNames(project string) []string {
 	entries, _ := os.ReadDir(filepath.Join(localSecretsDir(), project))
 	var out []string
 	for _, e := range entries {
 		if !e.IsDir() {
-			out = append(out, e.Name())
+			out = append(out, envFromFilename(e.Name()))
 		}
 	}
 	return out
+}
+
+// envFromFilename is the inverse of symlinkName: ".env" → "local", ".env.X" → "X".
+func envFromFilename(name string) string {
+	if name == ".env" {
+		return "local"
+	}
+	if strings.HasPrefix(name, ".env.") {
+		return strings.TrimPrefix(name, ".env.")
+	}
+	return name
 }
 
 // mergedKeys returns a sorted union of keys from two bool maps.
@@ -568,7 +581,7 @@ func localSecretsDir() string {
 }
 
 func localSecretPath(project, env string) string {
-	return filepath.Join(localSecretsDir(), project, env)
+	return filepath.Join(localSecretsDir(), project, symlinkName(env))
 }
 
 func loadConfig() (config, error) {

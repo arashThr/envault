@@ -36,10 +36,20 @@ export default function App() {
     }))
   }, [])
 
-  // Load projects whenever the password changes and is non-empty
+  // Load projects when password is set; clear all state when it is cleared.
   useEffect(() => {
     api.setApiKey(password)
-    if (password) loadProjects()
+    if (password) {
+      loadProjects()
+    } else {
+      setProjects([])
+      setFiles({})
+      setContents({})
+      setActiveProj(null)
+      setActiveFile(null)
+      setEditorValue('')
+      setDirty(false)
+    }
   }, [password])
 
   function notify(message: string, isError = false) {
