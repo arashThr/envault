@@ -15,7 +15,7 @@ async function request(path: string, options: RequestInit = {}): Promise<Respons
   const res = await fetch('/api' + path, {
     ...options,
     headers: {
-      'X-API-Key': apiKey,
+      'Authorization': 'Basic ' + btoa('envault:' + apiKey),
       ...options.headers,
     },
   })

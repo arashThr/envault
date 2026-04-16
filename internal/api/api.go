@@ -3,10 +3,12 @@ package api
 import (
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -47,12 +49,7 @@ func New(s *store.Store, apiKeyHash [32]byte, noAuth bool, logger *slog.Logger) 
 func authMiddleware(apiKeyHash [32]byte, logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			key := r.Header.Get("X-API-Key")
-			if key == "" {
-				if auth := r.Header.Get("Authorization"); len(auth) > 7 && auth[:7] == "Bearer " {
-					key = auth[7:]
-				}
-			}
+			key := extractKey(r)
 			provided := sha256.Sum256([]byte(key))
 			if subtle.ConstantTimeCompare(provided[:], apiKeyHash[:]) != 1 {
 				logger.Warn("authentication failed",
@@ -62,12 +59,38 @@ func authMiddleware(apiKeyHash [32]byte, logger *slog.Logger) func(http.Handler)
 					"has_key", key != "",
 					"id", middleware.GetReqID(r.Context()),
 				)
+				w.Header().Set("WWW-Authenticate", `Basic realm="Envault"`)
 				writeError(w, http.StatusUnauthorized, "unauthorized")
 				return
 			}
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// extractKey pulls the credential from the request, trying three locations
+// in priority order:
+//  1. X-API-Key header (CLI legacy)
+//  2. Authorization: Bearer <token>
+//  3. Authorization: Basic base64(user:password) — username is ignored
+func extractKey(r *http.Request) string {
+	if key := r.Header.Get("X-API-Key"); key != "" {
+		return key
+	}
+	auth := r.Header.Get("Authorization")
+	if strings.HasPrefix(auth, "Bearer ") {
+		return strings.TrimPrefix(auth, "Bearer ")
+	}
+	if strings.HasPrefix(auth, "Basic ") {
+		decoded, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(auth, "Basic "))
+		if err == nil {
+			// format is "username:password"; we only validate the password
+			if _, password, ok := strings.Cut(string(decoded), ":"); ok {
+				return password
+			}
+		}
+	}
+	return ""
 }
 
 func requestLogger(logger *slog.Logger) func(http.Handler) http.Handler {

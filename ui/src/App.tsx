@@ -21,7 +21,7 @@ export default function App() {
   const [busy, setBusy]               = useState(false)
   const [showFileModal, setShowFileModal] = useState(false)
 
-  // Single password — used for both auth (X-API-Key) and encryption passphrase.
+  // Single password — used for both HTTP Basic Auth and as the age encryption passphrase.
   // Stored in sessionStorage so page refreshes within the same tab don't
   // require re-entry. Cleared automatically when the tab/browser is closed.
   const [password, setPassword]       = useState(() => sessionStorage.getItem('envault_pw') ?? '')

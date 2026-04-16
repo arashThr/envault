@@ -13,7 +13,7 @@ ui:
 
 server:
 	@mkdir -p $(BIN_DIR)
-	go build -o $(SERVER) ./cmd/server
+	go build -o $(SERVER) ./cmd/envault-server
 
 cli:
 	@mkdir -p $(BIN_DIR)
