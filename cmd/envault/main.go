@@ -44,8 +44,6 @@ func main() {
 		runList(args)
 	case "remove", "rm":
 		runRemove(args)
-	case "sync":
-		runSync(args)
 	case "help", "-h", "--help":
 		printUsage()
 	default:
@@ -144,7 +142,7 @@ func runPull(args []string) {
 
 	url := fmt.Sprintf("%s/api/projects/%s/files/%s", cfg.Server, project, env)
 	req, _ := http.NewRequest(http.MethodGet, url, nil)
-	req.Header.Set("X-API-Key", cfg.APIKey)
+	req.SetBasicAuth("envault", cfg.APIKey)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -297,7 +295,7 @@ func runList(args []string) {
 			var status string
 			switch {
 			case serverSet[p] && localSet[p]:
-				status = "synced"
+				status = "both"
 			case localSet[p]:
 				status = "local-only"
 			default:
@@ -350,7 +348,7 @@ func runList(args []string) {
 		var status string
 		switch {
 		case onServer && onLocal:
-			status = "synced"
+			status = "both"
 		case onLocal:
 			status = "local-only"
 		default:
@@ -409,56 +407,6 @@ func mergedKeys(a, b map[string]bool) []string {
 	return keys
 }
 
-// sync encrypts and pushes all locally cached secrets to the server.
-func runSync(args []string) {
-	cfg := mustConfig()
-	secretsDir := localSecretsDir()
-
-	projects, err := os.ReadDir(secretsDir)
-	if os.IsNotExist(err) {
-		fmt.Println("No local secrets to sync.")
-		return
-	}
-	if err != nil {
-		fatalf("read secrets dir: %v\n", err)
-	}
-
-	pushed := 0
-	for _, pd := range projects {
-		if !pd.IsDir() {
-			continue
-		}
-		project := pd.Name()
-		envs, err := os.ReadDir(filepath.Join(secretsDir, project))
-		if err != nil {
-			continue
-		}
-		for _, fd := range envs {
-			if fd.IsDir() {
-				continue
-			}
-			env := fd.Name()
-			localPath := filepath.Join(secretsDir, project, env)
-			plaintext, err := os.ReadFile(localPath)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "  skip %s/%s: %v\n", project, env, err)
-				continue
-			}
-			content, err := encryptContent(plaintext, cfg.APIKey)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "  skip %s/%s: encrypt: %v\n", project, env, err)
-				continue
-			}
-			if err := apiPutFile(cfg, project, env, content); err != nil {
-				fmt.Fprintf(os.Stderr, "  failed %s/%s: %v\n", project, env, err)
-				continue
-			}
-			fmt.Printf("  pushed %s/%s\n", project, env)
-			pushed++
-		}
-	}
-	fmt.Printf("Synced %d file(s) to %s\n", pushed, cfg.Server)
-}
 
 // config [set server <url> | set key <apikey> | show]
 func runConfig(args []string) {
@@ -543,7 +491,7 @@ type fileEntry struct {
 
 func apiGetProjects(cfg config) ([]string, error) {
 	req, _ := http.NewRequest(http.MethodGet, cfg.Server+"/api/projects", nil)
-	req.Header.Set("X-API-Key", cfg.APIKey)
+	req.SetBasicAuth("envault", cfg.APIKey)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, err
@@ -564,7 +512,7 @@ func apiGetProjects(cfg config) ([]string, error) {
 func apiGetFiles(cfg config, project string) ([]fileEntry, error) {
 	url := fmt.Sprintf("%s/api/projects/%s/files", cfg.Server, project)
 	req, _ := http.NewRequest(http.MethodGet, url, nil)
-	req.Header.Set("X-API-Key", cfg.APIKey)
+	req.SetBasicAuth("envault", cfg.APIKey)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, err
@@ -588,7 +536,7 @@ func apiGetFiles(cfg config, project string) ([]fileEntry, error) {
 func apiPutFile(cfg config, project, env string, content []byte) error {
 	url := fmt.Sprintf("%s/api/projects/%s/files/%s", cfg.Server, project, env)
 	req, _ := http.NewRequest(http.MethodPut, url, bytes.NewReader(content))
-	req.Header.Set("X-API-Key", cfg.APIKey)
+	req.SetBasicAuth("envault", cfg.APIKey)
 	req.Header.Set("Content-Type", "application/octet-stream")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -715,7 +663,7 @@ func promptEnv() string {
 // checkAuth makes a lightweight request to verify the configured API key.
 func checkAuth(cfg config) error {
 	req, _ := http.NewRequest(http.MethodGet, cfg.Server+"/api/projects", nil)
-	req.Header.Set("X-API-Key", cfg.APIKey)
+	req.SetBasicAuth("envault", cfg.APIKey)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("could not reach server: %w", err)
@@ -798,7 +746,6 @@ COMMANDS:
   link   [project] [env]   Symlink a cached env file into cwd (no download)
   remove [project] [env]   Delete a locally cached env file (or entire project)
   list   [project]         List projects (or environments), merged from local + server
-  sync                     Encrypt and push all locally cached env files
 
   config show              Show current configuration
   config set server <url>  Set the server URL
@@ -817,5 +764,6 @@ EXAMPLES:
   envault list myapp                # show environments for myapp (local + server)
   envault remove myapp local        # delete local copy of myapp/local
   envault remove myapp              # delete all local secrets for myapp
+  envault list                      # PROJECT / STATUS (local-only | server-only | both)
 `)
 }
