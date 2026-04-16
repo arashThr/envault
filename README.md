@@ -118,8 +118,7 @@ envault push   [project] [env]   Encrypt + upload to server
 envault pull   [project] [env]   Download + decrypt + symlink into cwd
 envault link   [project] [env]   Symlink a cached secret into cwd (no download)
 envault remove [project] [env]   Delete local copy (or entire project directory)
-envault list   [project]         List projects or environments (local + server, with sync status)
-envault sync                     Encrypt + push all local secrets to server
+envault list   [project]         List projects or environments (status: local-only | server-only | both)
 ```
 
 `project` defaults to the current directory name when omitted.
@@ -146,9 +145,6 @@ envault list myapp                  # shows local vs server status for each env
 # Clean up a local copy
 envault remove myapp production     # deletes local cached file
 envault remove myapp                # deletes entire local project (with confirmation)
-
-# Push everything at once
-envault sync
 ```
 
 ---

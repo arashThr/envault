@@ -44,8 +44,6 @@ func main() {
 		runList(args)
 	case "remove", "rm":
 		runRemove(args)
-	case "sync":
-		runSync(args)
 	case "help", "-h", "--help":
 		printUsage()
 	default:
@@ -297,7 +295,7 @@ func runList(args []string) {
 			var status string
 			switch {
 			case serverSet[p] && localSet[p]:
-				status = "synced"
+				status = "both"
 			case localSet[p]:
 				status = "local-only"
 			default:
@@ -350,7 +348,7 @@ func runList(args []string) {
 		var status string
 		switch {
 		case onServer && onLocal:
-			status = "synced"
+			status = "both"
 		case onLocal:
 			status = "local-only"
 		default:
@@ -409,56 +407,6 @@ func mergedKeys(a, b map[string]bool) []string {
 	return keys
 }
 
-// sync encrypts and pushes all locally cached secrets to the server.
-func runSync(args []string) {
-	cfg := mustConfig()
-	secretsDir := localSecretsDir()
-
-	projects, err := os.ReadDir(secretsDir)
-	if os.IsNotExist(err) {
-		fmt.Println("No local secrets to sync.")
-		return
-	}
-	if err != nil {
-		fatalf("read secrets dir: %v\n", err)
-	}
-
-	pushed := 0
-	for _, pd := range projects {
-		if !pd.IsDir() {
-			continue
-		}
-		project := pd.Name()
-		envs, err := os.ReadDir(filepath.Join(secretsDir, project))
-		if err != nil {
-			continue
-		}
-		for _, fd := range envs {
-			if fd.IsDir() {
-				continue
-			}
-			env := fd.Name()
-			localPath := filepath.Join(secretsDir, project, env)
-			plaintext, err := os.ReadFile(localPath)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "  skip %s/%s: %v\n", project, env, err)
-				continue
-			}
-			content, err := encryptContent(plaintext, cfg.APIKey)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "  skip %s/%s: encrypt: %v\n", project, env, err)
-				continue
-			}
-			if err := apiPutFile(cfg, project, env, content); err != nil {
-				fmt.Fprintf(os.Stderr, "  failed %s/%s: %v\n", project, env, err)
-				continue
-			}
-			fmt.Printf("  pushed %s/%s\n", project, env)
-			pushed++
-		}
-	}
-	fmt.Printf("Synced %d file(s) to %s\n", pushed, cfg.Server)
-}
 
 // config [set server <url> | set key <apikey> | show]
 func runConfig(args []string) {
@@ -798,7 +746,6 @@ COMMANDS:
   link   [project] [env]   Symlink a cached env file into cwd (no download)
   remove [project] [env]   Delete a locally cached env file (or entire project)
   list   [project]         List projects (or environments), merged from local + server
-  sync                     Encrypt and push all locally cached env files
 
   config show              Show current configuration
   config set server <url>  Set the server URL
@@ -817,5 +764,6 @@ EXAMPLES:
   envault list myapp                # show environments for myapp (local + server)
   envault remove myapp local        # delete local copy of myapp/local
   envault remove myapp              # delete all local secrets for myapp
+  envault list                      # PROJECT / STATUS (local-only | server-only | both)
 `)
 }

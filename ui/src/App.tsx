@@ -21,17 +21,15 @@ export default function App() {
   const [busy, setBusy]               = useState(false)
   const [showFileModal, setShowFileModal] = useState(false)
 
-  // Single password — used for both HTTP Basic Auth and as the age encryption passphrase.
-  // Stored in sessionStorage so page refreshes within the same tab don't
-  // require re-entry. Cleared automatically when the tab/browser is closed.
-  const [password, setPassword]       = useState(() => sessionStorage.getItem('envault_pw') ?? '')
+  // Single password — kept in memory only (never persisted).
+  // Used for both HTTP Basic Auth and as the age encryption passphrase.
+  const [password, setPassword]       = useState('')
   const [modalMsg, setModalMsg]       = useState('')
   const passwordResolveRef = useRef<((pw: string) => void) | null>(null)
 
   // Wire the unauthorised handler once on mount
   useEffect(() => {
     api.setUnauthorizedHandler(() => new Promise<void>(resolve => {
-      sessionStorage.removeItem('envault_pw')
       setPassword('')
       passwordResolveRef.current = (_pw: string) => resolve()
       setModalMsg('Wrong password. Please try again.')
@@ -59,7 +57,6 @@ export default function App() {
   }
 
   function handlePasswordSubmit(pw: string) {
-    sessionStorage.setItem('envault_pw', pw)
     setPassword(pw)
     api.setApiKey(pw)
     setModalMsg('')
