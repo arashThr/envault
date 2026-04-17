@@ -110,9 +110,6 @@ func runPush(args []string) {
 	// Adopt a real file from cwd if the vault copy is missing.
 	if _, err := os.Stat(localPath); os.IsNotExist(err) {
 		if info, err := os.Lstat(linkPath); err == nil && info.Mode()&os.ModeSymlink == 0 {
-			if err := checkAuth(cfg); err != nil {
-				fatalf("authentication failed: %v\n", err)
-			}
 			confirmAdopt(symlinkName(env), project, env, localPath)
 			moveToVault(linkPath, localPath, project, env)
 		}
@@ -142,7 +139,6 @@ func runPull(args []string) {
 
 	url := fmt.Sprintf("%s/api/projects/%s/files/%s", cfg.Server, project, env)
 	req, _ := http.NewRequest(http.MethodGet, url, nil)
-	req.SetBasicAuth("envault", cfg.APIKey)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -504,7 +500,6 @@ type fileEntry struct {
 
 func apiGetProjects(cfg config) ([]string, error) {
 	req, _ := http.NewRequest(http.MethodGet, cfg.Server+"/api/projects", nil)
-	req.SetBasicAuth("envault", cfg.APIKey)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, err
@@ -525,7 +520,6 @@ func apiGetProjects(cfg config) ([]string, error) {
 func apiGetFiles(cfg config, project string) ([]fileEntry, error) {
 	url := fmt.Sprintf("%s/api/projects/%s/files", cfg.Server, project)
 	req, _ := http.NewRequest(http.MethodGet, url, nil)
-	req.SetBasicAuth("envault", cfg.APIKey)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, err
@@ -549,7 +543,6 @@ func apiGetFiles(cfg config, project string) ([]fileEntry, error) {
 func apiPutFile(cfg config, project, env string, content []byte) error {
 	url := fmt.Sprintf("%s/api/projects/%s/files/%s", cfg.Server, project, env)
 	req, _ := http.NewRequest(http.MethodPut, url, bytes.NewReader(content))
-	req.SetBasicAuth("envault", cfg.APIKey)
 	req.Header.Set("Content-Type", "application/octet-stream")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -607,13 +600,13 @@ func saveConfig(cfg config) {
 func mustConfig() config {
 	cfg, err := loadConfig()
 	if err != nil {
-		fatalf("no config — run `envault config set server <url>` and `envault config set key <key>`\n")
+		fatalf("no config — run `envault config set server <url>` and `envault config set key <passphrase>`\n")
 	}
 	if cfg.Server == "" {
 		fatalf("server not configured — run `envault config set server <url>`\n")
 	}
 	if cfg.APIKey == "" {
-		fatalf("api key not configured — run `envault config set key <apikey>`\n")
+		fatalf("passphrase not configured — run `envault config set key <passphrase>`\n")
 	}
 	return cfg
 }
@@ -671,24 +664,6 @@ func promptEnv() string {
 		return "local"
 	}
 	return v
-}
-
-// checkAuth makes a lightweight request to verify the configured API key.
-func checkAuth(cfg config) error {
-	req, _ := http.NewRequest(http.MethodGet, cfg.Server+"/api/projects", nil)
-	req.SetBasicAuth("envault", cfg.APIKey)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("could not reach server: %w", err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode == http.StatusUnauthorized {
-		return fmt.Errorf("wrong API key")
-	}
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("server returned %d", resp.StatusCode)
-	}
-	return nil
 }
 
 // confirmAdopt shows what will happen and requires explicit [y/N] confirmation.

@@ -1,0 +1,9 @@
+vault.example.com {
+    basicauth * {
+        # Generate a hashed password with: caddy hash-password
+        # Example user "envault" with password "your-strong-password":
+        envault $2a$14$...replace-with-caddy-hash-password-output...
+    }
+
+    reverse_proxy localhost:8080
+}
