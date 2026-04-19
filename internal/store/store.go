@@ -29,6 +29,12 @@ func New(dataDir string, logger *slog.Logger) (*Store, error) {
 		logger.Error("failed to create data directory", "dir", dataDir, "err", err)
 		return nil, fmt.Errorf("create data dir: %w", err)
 	}
+	probe := filepath.Join(dataDir, ".write-probe")
+	if err := os.WriteFile(probe, nil, 0600); err != nil {
+		logger.Error("data directory is not writable", "dir", dataDir, "err", err)
+		return nil, fmt.Errorf("data dir not writable: %w", err)
+	}
+	_ = os.Remove(probe)
 	logger.Debug("store directory ready", "dir", dataDir)
 	return &Store{dataDir: dataDir, log: logger}, nil
 }
