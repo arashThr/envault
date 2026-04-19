@@ -6,5 +6,12 @@ export default defineConfig({
   build: {
     outDir: '../cmd/envault-server/web',
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        entryFileNames: 'assets/index.js',
+        chunkFileNames: 'assets/[name].js',
+        assetFileNames: 'assets/[name].[ext]',
+      },
+    },
   },
 })

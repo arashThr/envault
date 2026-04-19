@@ -1,0 +1,32 @@
+version: 2
+
+before:
+  hooks:
+    - cmd: npm ci
+      dir: ui
+    - cmd: npm run build
+      dir: ui
+
+builds:
+  - id: server
+    main: ./cmd/envault-server
+    binary: envault-server
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+  - id: cli
+    main: ./cmd/envault
+    binary: envault
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+
+archives:
+  - formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+
+release:
+  github:
+    owner: arashThr
+    name: envault

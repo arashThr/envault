@@ -16,8 +16,12 @@ go install github.com/arashthr/envault/cmd/envault@latest
 
 ### Server
 
+The server embeds a compiled web UI, so it cannot be installed via `go install`. Download the latest pre-built binary from [GitHub Releases](https://github.com/arashThr/envault/releases):
+
 ```bash
-go install github.com/arashthr/envault/cmd/envault-server@latest
+# example for linux/amd64 — adjust for your platform
+curl -L https://github.com/arashThr/envault/releases/latest/download/envault_linux_amd64.tar.gz | tar xz
+sudo mv envault-server /usr/local/bin/
 ```
 
 ### Build from source
