@@ -194,14 +194,16 @@ func runPull(args []string) {
 	}
 
 	linkPath := filepath.Join(mustCwd(), symlinkName(env))
-	if _, err := os.Lstat(linkPath); os.IsNotExist(err) {
-		if err := os.Symlink(localPath, linkPath); err != nil {
-			fatalf("symlink: %v\n", err)
+	if info, err := os.Lstat(linkPath); err == nil {
+		if info.Mode()&os.ModeSymlink == 0 {
+			fatalf(".env exists and is not a symlink — remove it manually first\n")
 		}
-		fmt.Printf("Pulled %s/%s → %s (symlinked)\n", project, env, linkPath)
-	} else {
-		fmt.Printf("Pulled %s/%s → %s (updated)\n", project, env, localPath)
+		os.Remove(linkPath)
 	}
+	if err := os.Symlink(localPath, linkPath); err != nil {
+		fatalf("symlink: %v\n", err)
+	}
+	fmt.Printf("Pulled %s/%s → .env\n", project, env)
 }
 
 // link [project] [env]
@@ -215,14 +217,17 @@ func runLink(args []string) {
 	}
 
 	linkPath := filepath.Join(mustCwd(), symlinkName(env))
-	if _, err := os.Lstat(linkPath); err == nil {
-		fatalf("file already exists: %s\n", linkPath)
+	if info, err := os.Lstat(linkPath); err == nil {
+		if info.Mode()&os.ModeSymlink == 0 {
+			fatalf(".env exists and is not a symlink — remove it manually first\n")
+		}
+		os.Remove(linkPath)
 	}
 
 	if err := os.Symlink(localPath, linkPath); err != nil {
 		fatalf("symlink: %v\n", err)
 	}
-	fmt.Printf("Linked %s → %s\n", linkPath, localPath)
+	fmt.Printf("Linked .env → %s/%s\n", project, env)
 }
 
 // remove [project] [env]
@@ -244,11 +249,12 @@ func runRemove(args []string) {
 		if _, err := os.Stat(path); os.IsNotExist(err) {
 			fatalf("no local secret found for %s/%s\n", project, env)
 		}
+		linkPath := filepath.Join(mustCwd(), ".env")
+		detachSymlink(linkPath, path)
 		if err := os.Remove(path); err != nil {
 			fatalf("remove: %v\n", err)
 		}
 		fmt.Printf("Removed local %s/%s\n", project, env)
-		fmt.Println("Note: any symlink pointing to this file is now dangling.")
 		return
 	}
 
@@ -263,11 +269,12 @@ func runRemove(args []string) {
 		fmt.Println("Aborted.")
 		return
 	}
+	linkPath := filepath.Join(mustCwd(), ".env")
+	detachSymlink(linkPath, dir)
 	if err := os.RemoveAll(dir); err != nil {
 		fatalf("remove: %v\n", err)
 	}
 	fmt.Printf("Removed local project %s\n", project)
-	fmt.Println("Note: any symlinks pointing to these files are now dangling.")
 }
 
 // list [project]
@@ -406,14 +413,9 @@ func localEnvNames(project string) []string {
 	return out
 }
 
-// envFromFilename is the inverse of symlinkName: ".env" → "local", ".env.X" → "X".
+// envFromFilename returns the environment name for a vault file.
+// Vault files are now stored under the env name directly, so this is an identity.
 func envFromFilename(name string) string {
-	if name == ".env" {
-		return "local"
-	}
-	if strings.HasPrefix(name, ".env.") {
-		return strings.TrimPrefix(name, ".env.")
-	}
 	return name
 }
 
@@ -601,7 +603,7 @@ func localSecretsDir() string {
 }
 
 func localSecretPath(project, env string) string {
-	return filepath.Join(localSecretsDir(), project, symlinkName(env))
+	return filepath.Join(localSecretsDir(), project, env)
 }
 
 func loadConfig() (config, error) {
@@ -640,13 +642,10 @@ func mustConfig() config {
 
 // ── misc helpers ──────────────────────────────────────────────────────────────
 
-// symlinkName returns the filename used in the working directory for a given
-// environment: "local" maps to ".env"; all others map to ".env.<env>".
-func symlinkName(env string) string {
-	if env == "local" {
-		return ".env"
-	}
-	return ".env." + env
+// symlinkName returns the filename used in the working directory.
+// Always ".env" — the environment is selected by choosing which vault entry to link.
+func symlinkName(_ string) string {
+	return ".env"
 }
 
 // parseProjectEnv resolves the project and environment from CLI args,
@@ -727,6 +726,32 @@ func confirmAdopt(filename, project, env, vaultPath string) {
 		fmt.Println("Aborted.")
 		os.Exit(0)
 	}
+}
+
+// detachSymlink converts linkPath from a symlink to a real file when the symlink
+// target is vaultPath itself or any file inside it (for project-level removal).
+// Safe to call when the link doesn't exist or points elsewhere — it does nothing.
+func detachSymlink(linkPath, vaultPath string) {
+	target, err := os.Readlink(linkPath)
+	if err != nil {
+		return
+	}
+	clean := filepath.Clean(target)
+	cleanVault := filepath.Clean(vaultPath)
+	if clean != cleanVault && !strings.HasPrefix(clean, cleanVault+string(filepath.Separator)) {
+		return
+	}
+	content, err := os.ReadFile(linkPath)
+	if err != nil {
+		fatalf("read secret before detach: %v\n", err)
+	}
+	if err := os.Remove(linkPath); err != nil {
+		fatalf("remove symlink: %v\n", err)
+	}
+	if err := os.WriteFile(linkPath, content, 0600); err != nil {
+		fatalf("write .env: %v\n", err)
+	}
+	fmt.Println("Converted .env from symlink to real file.")
 }
 
 // moveToVault moves srcPath into the vault at dstPath and replaces it with a symlink.
