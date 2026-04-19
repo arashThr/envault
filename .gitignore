@@ -2,5 +2,5 @@ bin/
 /server
 /envault
 ui/node_modules/
-assets/
+cmd/envault-server/web/
 data/
