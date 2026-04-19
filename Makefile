@@ -1,6 +1,7 @@
 BIN_DIR   := bin
 SERVER    := $(BIN_DIR)/envault-server
 CLI       := $(BIN_DIR)/envault
+VERSION   := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 
 .PHONY: all build ui server cli test clean
 
@@ -17,7 +18,7 @@ server:
 
 cli:
 	@mkdir -p $(BIN_DIR)
-	go build -o $(CLI) ./cmd/envault
+	go build -ldflags "-X main.version=$(VERSION)" -o $(CLI) ./cmd/envault
 
 test:
 	go test ./cmd/... ./internal/... -v -race -count=1

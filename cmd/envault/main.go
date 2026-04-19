@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -21,6 +22,20 @@ import (
 var ageHeader = []byte("age-encryption.org/v1\n")
 
 var httpClient = &http.Client{Timeout: 30 * time.Second}
+
+// version is set via -ldflags at build time. Falls back to the module version
+// embedded by go install, or "dev" when building without tags.
+var version = "dev"
+
+func resolvedVersion() string {
+	if version != "dev" {
+		return version
+	}
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return info.Main.Version
+	}
+	return version
+}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -46,6 +61,8 @@ func main() {
 		runList(args)
 	case "remove", "rm":
 		runRemove(args)
+	case "version", "--version", "-v":
+		fmt.Println(resolvedVersion())
 	case "help", "-h", "--help":
 		printUsage()
 	default:
