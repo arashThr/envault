@@ -24,13 +24,13 @@ export default function PasswordModal({ message, onSubmit }: Props) {
   return (
     <div className="overlay">
       <div className="modal">
-        <h2>Password</h2>
+        <h2>Encryption Passphrase</h2>
         {message && <p className={message.toLowerCase().includes('wrong') || message.toLowerCase().includes('incorrect') || message.toLowerCase().includes('failed') ? 'error-msg' : ''}>{message}</p>}
         <div className="key-wrap">
           <input
             ref={inputRef}
             type={visible ? 'text' : 'password'}
-            placeholder="Enter your password"
+            placeholder="Enter your encryption passphrase"
             autoComplete="off"
             value={value}
             onChange={e => setValue(e.target.value)}

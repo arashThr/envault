@@ -1,14 +1,10 @@
 package api
 
 import (
-	"crypto/sha256"
-	"crypto/subtle"
-	"encoding/base64"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -18,18 +14,15 @@ import (
 )
 
 // New builds a chi router with all API routes mounted under /api.
-// apiKeyHash is the SHA-256 hash of the expected password; the plaintext is
-// never held in memory after the caller computes the hash at startup.
-// When noAuth is true the auth middleware is skipped entirely.
-func New(s *store.Store, apiKeyHash [32]byte, noAuth bool, logger *slog.Logger) http.Handler {
+// The server itself has no authentication — access control is delegated to
+// a reverse proxy (e.g. Caddy basicauth). Content security comes from
+// client-side age encryption; the server only stores opaque ciphertext.
+func New(s *store.Store, logger *slog.Logger) http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Recoverer)
 	r.Use(requestLogger(logger))
-	if !noAuth {
-		r.Use(authMiddleware(apiKeyHash, logger))
-	}
 
 	r.Route("/api", func(r chi.Router) {
 		r.Get("/projects", listProjects(s, logger))
@@ -45,53 +38,6 @@ func New(s *store.Store, apiKeyHash [32]byte, noAuth bool, logger *slog.Logger) 
 }
 
 // ── middleware ────────────────────────────────────────────────────────────────
-
-func authMiddleware(apiKeyHash [32]byte, logger *slog.Logger) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			key := extractKey(r)
-			provided := sha256.Sum256([]byte(key))
-			if subtle.ConstantTimeCompare(provided[:], apiKeyHash[:]) != 1 {
-				logger.Warn("authentication failed",
-					"remote_addr", r.RemoteAddr,
-					"method", r.Method,
-					"path", r.URL.Path,
-					"has_key", key != "",
-					"id", middleware.GetReqID(r.Context()),
-				)
-				w.Header().Set("WWW-Authenticate", `Basic realm="Envault"`)
-				writeError(w, http.StatusUnauthorized, "unauthorized")
-				return
-			}
-			next.ServeHTTP(w, r)
-		})
-	}
-}
-
-// extractKey pulls the credential from the request, trying three locations
-// in priority order:
-//  1. X-API-Key header (CLI legacy)
-//  2. Authorization: Bearer <token>
-//  3. Authorization: Basic base64(user:password) — username is ignored
-func extractKey(r *http.Request) string {
-	if key := r.Header.Get("X-API-Key"); key != "" {
-		return key
-	}
-	auth := r.Header.Get("Authorization")
-	if strings.HasPrefix(auth, "Bearer ") {
-		return strings.TrimPrefix(auth, "Bearer ")
-	}
-	if strings.HasPrefix(auth, "Basic ") {
-		decoded, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(auth, "Basic "))
-		if err == nil {
-			// format is "username:password"; we only validate the password
-			if _, password, ok := strings.Cut(string(decoded), ":"); ok {
-				return password
-			}
-		}
-	}
-	return ""
-}
 
 func requestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {

@@ -6,7 +6,7 @@ import Sidebar from './components/Sidebar'
 import Toolbar from './components/Toolbar'
 import Editor from './components/Editor'
 import StatusBar from './components/StatusBar'
-import PasswordModal from './components/ApiKeyModal'
+import PassphraseModal from './components/ApiKeyModal'
 import FileModal from './components/FileModal'
 
 export default function App() {
@@ -21,47 +21,33 @@ export default function App() {
   const [busy, setBusy]               = useState(false)
   const [showFileModal, setShowFileModal] = useState(false)
 
-  // Single password — kept in memory only (never persisted).
-  // Used for both HTTP Basic Auth and as the age encryption passphrase.
-  const [password, setPassword]       = useState('')
-  const [modalMsg, setModalMsg]       = useState('')
-  const passwordResolveRef = useRef<((pw: string) => void) | null>(null)
+  // Encryption passphrase — kept in memory only (never persisted).
+  const [passphrase, setPassphrase]       = useState('')
+  const [modalMsg, setModalMsg]           = useState('')
+  const passphraseResolveRef = useRef<((pw: string) => void) | null>(null)
 
-  // Wire the unauthorised handler once on mount
-  useEffect(() => {
-    api.setUnauthorizedHandler(() => new Promise<void>(resolve => {
-      setPassword('')
-      passwordResolveRef.current = (_pw: string) => resolve()
-      setModalMsg('Wrong password. Please try again.')
-    }))
-  }, [])
-
-  // Load projects whenever the password changes and is non-empty
-  useEffect(() => {
-    api.setApiKey(password)
-    if (password) loadProjects()
-  }, [password])
+  // Load projects on mount — no auth needed (access control is handled by the reverse proxy).
+  useEffect(() => { loadProjects() }, [])
 
   function notify(message: string, isError = false) {
     setStatus({ message, isError })
   }
 
-  // ── password gate ─────────────────────────────────────────────────────────────
+  // ── passphrase gate ───────────────────────────────────────────────────────────
 
-  /** Returns the current password, showing the modal if not yet set. */
-  function requirePassword(): Promise<string> {
-    if (password) return Promise.resolve(password)
+  /** Returns the current passphrase, showing the modal if not yet set. */
+  function requirePassphrase(): Promise<string> {
+    if (passphrase) return Promise.resolve(passphrase)
     return new Promise<string>(resolve => {
-      passwordResolveRef.current = resolve
+      passphraseResolveRef.current = resolve
     })
   }
 
-  function handlePasswordSubmit(pw: string) {
-    setPassword(pw)
-    api.setApiKey(pw)
+  function handlePassphraseSubmit(pw: string) {
+    setPassphrase(pw)
     setModalMsg('')
-    passwordResolveRef.current?.(pw)
-    passwordResolveRef.current = null
+    passphraseResolveRef.current?.(pw)
+    passphraseResolveRef.current = null
   }
 
   // ── data loading ─────────────────────────────────────────────────────────────
@@ -88,16 +74,16 @@ export default function App() {
     if (contents[key] !== undefined) return contents[key]
     setBusy(true)
     try {
-      const pw = await requirePassword()
+      const pw = await requirePassphrase()
       const bytes = await api.getFile(project, file)
       let text: string
       if (isAgeEncrypted(bytes)) {
         try {
           text = await decryptWithPassphrase(bytes, pw)
         } catch {
-          setPassword('')
-          setModalMsg('Wrong password — decryption failed. Please try again.')
-          notify('Wrong password.', true)
+          setPassphrase('')
+          setModalMsg('Wrong passphrase — decryption failed. Please try again.')
+          notify('Wrong passphrase.', true)
           return ''
         }
       } else {
@@ -136,7 +122,7 @@ export default function App() {
     if (!activeProj || !activeFile) return
     setBusy(true)
     try {
-      const pw = await requirePassword()
+      const pw = await requirePassphrase()
       const ciphertext = await encryptWithPassphrase(editorValue, pw)
       await api.putFile(activeProj, activeFile, ciphertext)
       setContents(prev => ({ ...prev, [`${activeProj}/${activeFile}`]: editorValue }))
@@ -148,7 +134,7 @@ export default function App() {
     } finally {
       setBusy(false)
     }
-  }, [activeProj, activeFile, editorValue, password])
+  }, [activeProj, activeFile, editorValue, passphrase])
 
   async function handleDeleteFile(project: string, file: string) {
     try {
@@ -183,7 +169,7 @@ export default function App() {
     if (!activeProj) return
     setBusy(true)
     try {
-      const pw = await requirePassword()
+      const pw = await requirePassphrase()
       const ciphertext = await encryptWithPassphrase('', pw)
       await api.putFile(activeProj, name, ciphertext)
       await loadFiles(activeProj)
@@ -208,7 +194,7 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [handleSave])
 
-  const showModal = !password || modalMsg !== ''
+  const showModal = !passphrase || modalMsg !== ''
 
   return (
     <>
@@ -250,9 +236,9 @@ export default function App() {
       </div>
 
       {showModal && (
-        <PasswordModal
-          message={modalMsg || 'Enter your password to connect to the vault.'}
-          onSubmit={handlePasswordSubmit}
+        <PassphraseModal
+          message={modalMsg || 'Enter your encryption passphrase to open files.'}
+          onSubmit={handlePassphraseSubmit}
         />
       )}
 

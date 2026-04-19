@@ -1,7 +1,6 @@
 package api_test
 
 import (
-	"crypto/sha256"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -14,10 +13,6 @@ import (
 	"github.com/arashthr/envault/internal/store"
 )
 
-const testKey = "test-api-key"
-
-// setup creates a test server backed by a temp store.
-// It returns the handler and a function that sends authenticated requests.
 func setup(t *testing.T) (http.Handler, *store.Store) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -25,28 +20,19 @@ func setup(t *testing.T) (http.Handler, *store.Store) {
 	if err != nil {
 		t.Fatalf("store.New: %v", err)
 	}
-	return api.New(s, sha256.Sum256([]byte(testKey)), false, logger), s
+	return api.New(s, logger), s
 }
 
-// do sends a request to the handler and returns the response.
-func do(t *testing.T, h http.Handler, method, path, body, key string) *http.Response {
+func do(t *testing.T, h http.Handler, method, path, body string) *http.Response {
 	t.Helper()
 	var bodyReader io.Reader
 	if body != "" {
 		bodyReader = strings.NewReader(body)
 	}
 	req := httptest.NewRequest(method, path, bodyReader)
-	if key != "" {
-		req.Header.Set("X-API-Key", key)
-	}
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 	return w.Result()
-}
-
-// auth is a shortcut for do with the correct key.
-func auth(t *testing.T, h http.Handler, method, path, body string) *http.Response {
-	return do(t, h, method, path, body, testKey)
 }
 
 // decodeJSON reads JSON from a response body into v.
@@ -77,45 +63,11 @@ func mustStatus(t *testing.T, res *http.Response, want int) {
 	}
 }
 
-// ── Authentication ────────────────────────────────────────────────────────────
-
-func TestAuth_missingKey(t *testing.T) {
-	h, _ := setup(t)
-	res := do(t, h, http.MethodGet, "/api/projects", "", "")
-	mustStatus(t, res, http.StatusUnauthorized)
-}
-
-func TestAuth_wrongKey(t *testing.T) {
-	h, _ := setup(t)
-	res := do(t, h, http.MethodGet, "/api/projects", "", "wrong-key")
-	mustStatus(t, res, http.StatusUnauthorized)
-}
-
-func TestAuth_bearerToken(t *testing.T) {
-	h, _ := setup(t)
-	req := httptest.NewRequest(http.MethodGet, "/api/projects", nil)
-	req.Header.Set("Authorization", "Bearer "+testKey)
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, req)
-	mustStatus(t, w.Result(), http.StatusOK)
-}
-
-func TestAuth_errorBody(t *testing.T) {
-	h, _ := setup(t)
-	res := do(t, h, http.MethodGet, "/api/projects", "", "bad")
-	mustStatus(t, res, http.StatusUnauthorized)
-	var body map[string]string
-	decodeJSON(t, res, &body)
-	if body["error"] == "" {
-		t.Error("expected error field in response body")
-	}
-}
-
 // ── GET /api/projects ─────────────────────────────────────────────────────────
 
 func TestListProjects_empty(t *testing.T) {
 	h, _ := setup(t)
-	res := auth(t, h, http.MethodGet, "/api/projects", "")
+	res := do(t, h, http.MethodGet, "/api/projects", "")
 	mustStatus(t, res, http.StatusOK)
 
 	var body struct {
@@ -132,7 +84,7 @@ func TestListProjects(t *testing.T) {
 	_ = s.PutFile("alpha", ".env", []byte("A=1"))
 	_ = s.PutFile("beta", ".env", []byte("B=2"))
 
-	res := auth(t, h, http.MethodGet, "/api/projects", "")
+	res := do(t, h, http.MethodGet, "/api/projects", "")
 	mustStatus(t, res, http.StatusOK)
 
 	var body struct {
@@ -150,11 +102,11 @@ func TestDeleteProject(t *testing.T) {
 	h, s := setup(t)
 	_ = s.PutFile("proj", ".env", []byte("X=1"))
 
-	res := auth(t, h, http.MethodDelete, "/api/projects/proj", "")
+	res := do(t, h, http.MethodDelete, "/api/projects/proj", "")
 	mustStatus(t, res, http.StatusNoContent)
 
 	// Verify it's gone
-	res = auth(t, h, http.MethodGet, "/api/projects/proj/files", "")
+	res = do(t, h, http.MethodGet, "/api/projects/proj/files", "")
 	mustStatus(t, res, http.StatusNotFound)
 }
 
@@ -165,7 +117,7 @@ func TestListFiles_empty(t *testing.T) {
 	_ = s.PutFile("proj", ".env", []byte("A=1"))
 	_ = s.DeleteFile("proj", ".env")
 
-	res := auth(t, h, http.MethodGet, "/api/projects/proj/files", "")
+	res := do(t, h, http.MethodGet, "/api/projects/proj/files", "")
 	mustStatus(t, res, http.StatusOK)
 
 	var body struct {
@@ -182,7 +134,7 @@ func TestListFiles(t *testing.T) {
 	_ = s.PutFile("proj", ".env", []byte("A=1"))
 	_ = s.PutFile("proj", ".env.staging", []byte("A=stage"))
 
-	res := auth(t, h, http.MethodGet, "/api/projects/proj/files", "")
+	res := do(t, h, http.MethodGet, "/api/projects/proj/files", "")
 	mustStatus(t, res, http.StatusOK)
 
 	var body struct {
@@ -209,7 +161,7 @@ func TestListFiles(t *testing.T) {
 
 func TestListFiles_projectNotFound(t *testing.T) {
 	h, _ := setup(t)
-	res := auth(t, h, http.MethodGet, "/api/projects/ghost/files", "")
+	res := do(t, h, http.MethodGet, "/api/projects/ghost/files", "")
 	mustStatus(t, res, http.StatusNotFound)
 
 	var body map[string]string
@@ -223,7 +175,7 @@ func TestListFiles_projectNotFound(t *testing.T) {
 
 func TestPutFile(t *testing.T) {
 	h, _ := setup(t)
-	res := auth(t, h, http.MethodPut, "/api/projects/myapp/files/.env", "SECRET=abc")
+	res := do(t, h, http.MethodPut, "/api/projects/myapp/files/.env", "SECRET=abc")
 	mustStatus(t, res, http.StatusOK)
 
 	var body map[string]string
@@ -235,9 +187,9 @@ func TestPutFile(t *testing.T) {
 
 func TestPutFile_appears_in_list(t *testing.T) {
 	h, _ := setup(t)
-	auth(t, h, http.MethodPut, "/api/projects/myapp/files/.env", "SECRET=abc")
+	do(t, h, http.MethodPut, "/api/projects/myapp/files/.env", "SECRET=abc")
 
-	res := auth(t, h, http.MethodGet, "/api/projects/myapp/files", "")
+	res := do(t, h, http.MethodGet, "/api/projects/myapp/files", "")
 	mustStatus(t, res, http.StatusOK)
 
 	var body struct {
@@ -253,7 +205,7 @@ func TestPutFile_invalidName(t *testing.T) {
 	h, _ := setup(t)
 	// Path traversal via URL-encoded segments handled by chi (404, not 400).
 	// Direct invalid name via store validation:
-	res := auth(t, h, http.MethodPut, "/api/projects/../evil/files/.env", "X=1")
+	res := do(t, h, http.MethodPut, "/api/projects/../evil/files/.env", "X=1")
 	// chi won't route this — expect 404 or 400, not 200.
 	if res.StatusCode == http.StatusOK {
 		t.Error("expected non-200 for path-traversal attempt")
@@ -267,7 +219,7 @@ func TestGetFile(t *testing.T) {
 	content := "DB=postgres://localhost/app\nSECRET=xyz\n"
 	_ = s.PutFile("myapp", ".env", []byte(content))
 
-	res := auth(t, h, http.MethodGet, "/api/projects/myapp/files/.env", "")
+	res := do(t, h, http.MethodGet, "/api/projects/myapp/files/.env", "")
 	mustStatus(t, res, http.StatusOK)
 
 	got := bodyText(t, res)
@@ -281,7 +233,7 @@ func TestGetFile(t *testing.T) {
 
 func TestGetFile_notFound(t *testing.T) {
 	h, _ := setup(t)
-	res := auth(t, h, http.MethodGet, "/api/projects/ghost/files/.env", "")
+	res := do(t, h, http.MethodGet, "/api/projects/ghost/files/.env", "")
 	mustStatus(t, res, http.StatusNotFound)
 
 	var body map[string]string
@@ -296,11 +248,11 @@ func TestGetFile_roundTrip(t *testing.T) {
 	content := "KEY=value123\nANOTHER=secret\n"
 
 	// Put via API
-	res := auth(t, h, http.MethodPut, "/api/projects/app/files/.env", content)
+	res := do(t, h, http.MethodPut, "/api/projects/app/files/.env", content)
 	mustStatus(t, res, http.StatusOK)
 
 	// Get via API
-	res = auth(t, h, http.MethodGet, "/api/projects/app/files/.env", "")
+	res = do(t, h, http.MethodGet, "/api/projects/app/files/.env", "")
 	mustStatus(t, res, http.StatusOK)
 
 	got := bodyText(t, res)
@@ -315,16 +267,16 @@ func TestDeleteFile(t *testing.T) {
 	h, s := setup(t)
 	_ = s.PutFile("proj", ".env", []byte("X=1"))
 
-	res := auth(t, h, http.MethodDelete, "/api/projects/proj/files/.env", "")
+	res := do(t, h, http.MethodDelete, "/api/projects/proj/files/.env", "")
 	mustStatus(t, res, http.StatusNoContent)
 
-	res = auth(t, h, http.MethodGet, "/api/projects/proj/files/.env", "")
+	res = do(t, h, http.MethodGet, "/api/projects/proj/files/.env", "")
 	mustStatus(t, res, http.StatusNotFound)
 }
 
 func TestDeleteFile_notFound(t *testing.T) {
 	h, _ := setup(t)
-	res := auth(t, h, http.MethodDelete, "/api/projects/ghost/files/.env", "")
+	res := do(t, h, http.MethodDelete, "/api/projects/ghost/files/.env", "")
 	// File doesn't exist — store returns an error.
 	if res.StatusCode == http.StatusOK {
 		t.Error("expected non-200 deleting nonexistent file")
@@ -335,13 +287,13 @@ func TestDeleteFile_notFound(t *testing.T) {
 
 func TestUnknownRoute(t *testing.T) {
 	h, _ := setup(t)
-	res := auth(t, h, http.MethodGet, "/api/does-not-exist", "")
+	res := do(t, h, http.MethodGet, "/api/does-not-exist", "")
 	mustStatus(t, res, http.StatusNotFound)
 }
 
 func TestMethodNotAllowed(t *testing.T) {
 	h, _ := setup(t)
 	// POST is not a valid method for /api/projects
-	res := auth(t, h, http.MethodPost, "/api/projects", "")
+	res := do(t, h, http.MethodPost, "/api/projects", "")
 	mustStatus(t, res, http.StatusMethodNotAllowed)
 }

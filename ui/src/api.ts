@@ -1,29 +1,7 @@
 import type { FileInfo } from './types'
 
-let apiKey = ''
-let onUnauthorized: (() => Promise<void>) | null = null
-
-export function setApiKey(key: string) {
-  apiKey = key
-}
-
-export function setUnauthorizedHandler(handler: () => Promise<void>) {
-  onUnauthorized = handler
-}
-
 async function request(path: string, options: RequestInit = {}): Promise<Response> {
-  const res = await fetch('/api' + path, {
-    ...options,
-    headers: {
-      'Authorization': 'Basic ' + btoa('envault:' + apiKey),
-      ...options.headers,
-    },
-  })
-  if (res.status === 401 && onUnauthorized) {
-    await onUnauthorized()
-    // caller should retry or bail; return the 401 response as-is
-  }
-  return res
+  return fetch('/api' + path, options)
 }
 
 async function extractError(res: Response): Promise<string> {
