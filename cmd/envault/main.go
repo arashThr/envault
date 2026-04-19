@@ -20,6 +20,8 @@ import (
 // ageHeader is the prefix of every age binary-format ciphertext.
 var ageHeader = []byte("age-encryption.org/v1\n")
 
+var httpClient = &http.Client{Timeout: 30 * time.Second}
+
 func main() {
 	if len(os.Args) < 2 {
 		printUsage()
@@ -151,9 +153,12 @@ func runPull(args []string) {
 	project, env := parseProjectEnv(args)
 
 	url := fmt.Sprintf("%s/api/projects/%s/files/%s", cfg.Server, project, env)
-	req, _ := http.NewRequest(http.MethodGet, url, nil)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		fatalf("build request: %v\n", err)
+	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		fatalf("pull: %v\n", err)
 	}
@@ -512,8 +517,11 @@ type fileEntry struct {
 }
 
 func apiGetProjects(cfg config) ([]string, error) {
-	req, _ := http.NewRequest(http.MethodGet, cfg.Server+"/api/projects", nil)
-	resp, err := http.DefaultClient.Do(req)
+	req, err := http.NewRequest(http.MethodGet, cfg.Server+"/api/projects", nil)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -532,8 +540,11 @@ func apiGetProjects(cfg config) ([]string, error) {
 
 func apiGetFiles(cfg config, project string) ([]fileEntry, error) {
 	url := fmt.Sprintf("%s/api/projects/%s/files", cfg.Server, project)
-	req, _ := http.NewRequest(http.MethodGet, url, nil)
-	resp, err := http.DefaultClient.Do(req)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -555,9 +566,12 @@ func apiGetFiles(cfg config, project string) ([]fileEntry, error) {
 
 func apiPutFile(cfg config, project, env string, content []byte) error {
 	url := fmt.Sprintf("%s/api/projects/%s/files/%s", cfg.Server, project, env)
-	req, _ := http.NewRequest(http.MethodPut, url, bytes.NewReader(content))
+	req, err := http.NewRequest(http.MethodPut, url, bytes.NewReader(content))
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
 	req.Header.Set("Content-Type", "application/octet-stream")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return err
 	}
